@@ -4,6 +4,7 @@ from typing import List, Union
 
 import numpy as np
 import open3d as o3d
+import cv2
 from matplotlib import colors
 
 COLORS_ANSI = OrderedDict({
@@ -110,3 +111,57 @@ def draw_registration_result(source: o3d.geometry.PointCloud, target: o3d.geomet
 
     source_temp.transform(transformation)
     o3d.visualization.draw_geometries([source_temp, target_temp])
+
+def show_render_result(gt_rgb=None, gt_depth=None,est_depth=None,est_depth_scaled=None,render_rgb=None,render_depth=None,
+                       render_normal=None,render_alpha=None ):
+    if gt_rgb is not None:
+        image_show = gt_rgb.detach().cpu().numpy().transpose(1, 2, 0)
+        image_show = image_show/np.max(image_show)
+        image_show = (image_show*255).astype(np.uint8)
+        image_show = cv2.cvtColor(image_show, cv2.COLOR_RGB2BGR)
+        cv2.imshow("image", image_show)
+    if gt_depth is not None:
+        depth_show = gt_depth.detach().cpu().numpy()*5000
+        depth_show = depth_show.astype(np.uint16)
+        depth_image_8bit =  cv2.normalize(depth_show, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)  # 16位转8位
+        gt_depth_color_map = cv2.applyColorMap(depth_image_8bit, cv2.COLORMAP_JET)
+        cv2.imshow("depth", gt_depth_color_map)
+    if est_depth is not None:
+        est_depth_show = (1/est_depth).cpu().numpy()
+        est_depth_show = est_depth_show/np.max(est_depth_show)
+        est_depth_show = (est_depth_show*255).astype(np.uint8)
+        cv2.imshow("est_depth", est_depth_show)
+    if est_depth_scaled is not None:
+        est_depth_scaled_show = est_depth_scaled.cpu().numpy()
+        est_depth_scaled_show = est_depth_scaled_show/np.max(est_depth_scaled_show)
+        est_depth_scaled_show = (est_depth_scaled_show*255).astype(np.uint8)
+        cv2.imshow("est_depth_scaled", est_depth_scaled_show)
+    if render_rgb is not None:
+        image_show = render_rgb.detach().cpu().numpy().transpose(1, 2, 0)
+        image_show = image_show/np.max(image_show)
+        image_show = (image_show*255).astype(np.uint8)
+        image_show = cv2.cvtColor(image_show, cv2.COLOR_RGB2BGR)
+        cv2.imshow("render_rgb", image_show)
+    if render_depth is not None:
+        depth_show = render_depth.detach().cpu().numpy() * 5000
+        depth_show = depth_show.astype(np.uint16)
+        depth_show = np.squeeze(depth_show)  # 去除维度为1的维度
+        depth_image_8bit =  cv2.normalize(depth_show, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)  # 16位转8位
+        render_depth_color_map = cv2.applyColorMap(depth_image_8bit, cv2.COLORMAP_JET)
+        cv2.imshow("render_depth", render_depth_color_map)
+    if render_normal is not None:
+        normal_show = render_normal.detach().cpu().numpy().transpose(1, 2, 0)
+        rgb_norms = np.zeros((normal_show.shape[0], normal_show.shape[1], 3), dtype=np.uint8)
+        rgb_norms[..., 0] = ((normal_show[..., 0] + 1) * 127.5).astype(np.uint8)
+        rgb_norms[..., 1] = ((normal_show[..., 1] + 1) * 127.5).astype(np.uint8)
+        rgb_norms[..., 2] = ((normal_show[..., 2] + 1) * 127.5).astype(np.uint8)
+        rgb_norms = cv2.cvtColor(rgb_norms, cv2.COLOR_RGB2BGR)
+        cv2.imshow("render_normal", rgb_norms)
+    if render_alpha is not None:
+        alpha_show = render_alpha.detach().cpu().numpy()
+        alpha_show = alpha_show/np.max(alpha_show)
+        alpha_show = (alpha_show*255).astype(np.uint8)
+        alpha_show = np.squeeze(alpha_show)
+        cv2.imshow("render_alpha", alpha_show)
+    cv2.waitKey(1)
+    return

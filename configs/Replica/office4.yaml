@@ -1,4 +1,7 @@
 inherit_from: configs/Replica/replica.yaml
+start_idx: 50
+stride: 2
+early_stop: 2400
 data:
   scene_name: office4
   input_path: data/Replica-SLAM/Replica/office4/

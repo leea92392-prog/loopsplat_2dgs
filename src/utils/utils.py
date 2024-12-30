@@ -5,8 +5,7 @@ import random
 import numpy as np
 import open3d as o3d
 import torch
-from gaussian_rasterizer import GaussianRasterizationSettings, GaussianRasterizer
-
+from diff_surfel_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
 def setup_seed(seed: int) -> None:
     """ Sets the seed for generating random numbers to ensure reproducibility across multiple runs.
@@ -168,7 +167,6 @@ def render_gaussian_model(gaussian_model, render_settings,
         colors_precomp = override_colors
     else:
         shs = gaussian_model.get_features()
-
     render_args = {
         "means3D": means3D,
         "means2D": means2D,
@@ -179,9 +177,50 @@ def render_gaussian_model(gaussian_model, render_settings,
         "rotations": gaussian_model.get_rotation() if override_rotations is None else override_rotations,
         "cov3D_precomp": None
     }
-    color, depth, alpha, radii = renderer(**render_args)
+    rendered_image, radii, allmap = renderer(**render_args)
+    rets =  {"color": rendered_image,
+            "viewspace_points": means2D,
+            "visibility_filter" : radii > 0,
+            "radii": radii,
+        }
+    # additional regularizations
+    render_alpha = allmap[1:2]
+    # get normal map
+    # transform normal from view space to world space
+    render_normal = allmap[2:5]
+    render_normal = (render_normal.permute(1,2,0) @ (render_settings.viewmatrix[:3,:3].T)).permute(2,0,1)    
+    # get median depth map
+    render_depth_median = allmap[5:6]
+    render_depth_median = torch.nan_to_num(render_depth_median, 0, 0)
+    # get expected depth map
+    render_depth_expected = allmap[0:1]
+    render_depth_expected = (render_depth_expected / (render_alpha+1e-8))
+    render_depth_expected = torch.nan_to_num(render_depth_expected, 0, 0)
+    # get depth distortion map
+    render_dist = allmap[6:7]
+    # psedo surface attributes
+    # surf depth is either median or expected by setting depth_ratio to 1 or 0
+    # for bounded scene, use median depth, i.e., depth_ratio = 1; 
+    # for unbounded scene, use expected depth, i.e., depth_ration = 0, to reduce disk anliasing.
+    surf_depth = render_depth_expected 
+    # # assume the depth points form the 'surface' and generate psudo surface normal for regularizations.
+    surf_normal = depth_to_normal(render_settings, surf_depth)
+    surf_normal = surf_normal.permute(2,0,1)
+    # # remember to multiply with accum_alpha since render_normal is unnormalized.
+    surf_normal = surf_normal * (render_alpha).detach()
 
-    return {"color": color, "depth": depth, "radii": radii, "means2D": means2D, "alpha": alpha}
+
+    rets.update({
+            'alpha': render_alpha,
+            'rend_normal': render_normal,
+            'rend_dist': render_dist,
+            'depth': surf_depth,
+            'normal': surf_normal,
+    })
+    # for k, v in rets.items():
+    #     print(k, v.shape)
+    return rets
+    # return {"color": color, "depth": depth, "radii": radii, "means2D": means2D, "alpha": alpha}
 
 
 def batch_search_faiss(indexer, query_points, k):
@@ -216,3 +255,33 @@ def filter_depth_outliers(depth_map, kernel_size=3, threshold=1.0):
     outlier_mask = abs_diff > threshold
     depth_map_filtered = np.where(outlier_mask, median_filtered, depth_map)
     return depth_map_filtered
+
+def depths_to_points(render_settings, depthmap):
+    c2w = (render_settings.viewmatrix.T).inverse()
+    W, H = render_settings.image_width, render_settings.image_height
+    ndc2pix = torch.tensor([
+        [W / 2, 0, 0, (W) / 2],
+        [0, H / 2, 0, (H) / 2],
+        [0, 0, 0, 1]]).float().cuda().T
+    projection_matrix = c2w.T @ render_settings.projmatrix
+    intrins = (projection_matrix @ ndc2pix)[:3,:3].T
+    
+    grid_x, grid_y = torch.meshgrid(torch.arange(W, device='cuda').float(), torch.arange(H, device='cuda').float(), indexing='xy')
+    points = torch.stack([grid_x, grid_y, torch.ones_like(grid_x)], dim=-1).reshape(-1, 3)
+    rays_d = points @ intrins.inverse().T @ c2w[:3,:3].T
+    rays_o = c2w[:3,3]
+    points = depthmap.reshape(-1, 1) * rays_d + rays_o
+    return points
+
+def depth_to_normal(render_settings, depth):
+    """
+        view: view camera
+        depth: depthmap 
+    """
+    points = depths_to_points(render_settings, depth).reshape(*depth.shape[1:], 3)
+    output = torch.zeros_like(points)
+    dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
+    dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
+    normal_map = torch.nn.functional.normalize(torch.cross(dx, dy, dim=-1), dim=-1)
+    output[1:-1, 1:-1, :] = normal_map
+    return output

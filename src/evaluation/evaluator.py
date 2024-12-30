@@ -43,13 +43,12 @@ class Evaluator(object):
         self.checkpoint_path = Path(checkpoint_path)
         self.use_wandb = self.config["use_wandb"]
         self.device = "cuda"
-        self.dataset = get_dataset(self.config["dataset_name"])({**self.config["data"], **self.config["cam"]})
+        self.dataset = get_dataset(self.config["dataset_name"])(dataset_config=self.config)
         self.scene_name = self.config["data"]["scene_name"]
         self.dataset_name = self.config["dataset_name"]
         self.gt_poses = np.array(self.dataset.poses)
         self.fx, self.fy = self.dataset.intrinsics[0, 0], self.dataset.intrinsics[1, 1]
-        self.cx, self.cy = self.dataset.intrinsics[0,
-                                                   2], self.dataset.intrinsics[1, 2]
+        self.cx, self.cy = self.dataset.intrinsics[0, 2], self.dataset.intrinsics[1, 2]
         self.width, self.height = self.dataset.width, self.dataset.height
         self.save_render = save_render
         if self.save_render:
@@ -342,17 +341,22 @@ class Evaluator(object):
             traceback.print_exc()
 
         try:
+            self.run_rendering_eval()
+        except Exception:
+            print("Could not run rendering eval")
+            traceback.print_exc()
+
+        try:
             self.run_reconstruction_eval()
         except Exception:
             print("Could not run reconstruction eval")
             traceback.print_exc()
-            
-        try:
-            self.run_global_map_eval()
-        except Exception:
-            print("Could not run global map eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_global_map_eval()
+        # except Exception:
+        #     print("Could not run global map eval")
+        #     traceback.print_exc()
 
-        if self.use_wandb: 
-            evals = ["rendering_metrics.json", "reconstruction_metrics.json", "ate_aligned.json", "nvs_eval/results.json"]
-            log_metrics_to_wandb(evals, self.checkpoint_path, "Evaluation")
+        # if self.use_wandb: 
+        #     evals = ["rendering_metrics.json", "reconstruction_metrics.json", "ate_aligned.json", "nvs_eval/results.json"]
+        #     log_metrics_to_wandb(evals, self.checkpoint_path, "Evaluation")

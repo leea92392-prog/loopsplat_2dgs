@@ -44,7 +44,8 @@ class Mapper(object):
         self.current_view_opt_iterations = config["current_view_opt_iterations"]
         self.opt = OptimizationParams(ArgumentParser(description="Training script parameters"))
         self.keyframes = []
-
+    
+    #计算添加高斯的掩模
     def compute_seeding_mask(self, gaussian_model: GaussianModel, keyframe: dict, new_submap: bool) -> np.ndarray:
         """
         Computes a binary mask to identify regions within a keyframe where new Gaussian models should be seeded
@@ -56,10 +57,13 @@ class Mapper(object):
         Returns:
             np.ndarray: A binary mask of shpae (H, W) indicates regions suitable for seeding new 3D Gaussian models
         """
+        #是否添加高斯的掩模
         seeding_mask = None
+        #为什么如果是新的子图要用边缘掩模，只在边缘处添加高斯？？
         if new_submap:
             color_for_mask = (torch2np(keyframe["color"].permute(1, 2, 0)) * 255).astype(np.uint8)
             seeding_mask = geometric_edge_mask(color_for_mask, RGB=True)
+        #如果不是新的子图，就用alpha掩模和深度误差掩模
         else:
             render_dict = render_gaussian_model(gaussian_model, keyframe["render_settings"])
             alpha_mask = (render_dict["alpha"] < self.alpha_thre)
@@ -69,7 +73,8 @@ class Mapper(object):
             seeding_mask = alpha_mask | depth_error_mask
             seeding_mask = torch2np(seeding_mask[0])
         return seeding_mask
-
+    
+    #从当前帧的图像和深度图中创建点云（并变换到世界系），并按照规则采样
     def seed_new_gaussians(self, gt_color: np.ndarray, gt_depth: np.ndarray, intrinsics: np.ndarray,
                            estimate_c2w: np.ndarray, seeding_mask: np.ndarray, is_new_submap: bool) -> np.ndarray:
         """
@@ -86,18 +91,24 @@ class Mapper(object):
             np.ndarray: An array of 3D points where new Gaussians will be initialized, with shape (N, 3)
 
         """
+        #获得当前帧图像在世界坐标系下的点云，形状为【num，6】，且在第一个维度上是有序的，与图像的像素顺序一致，也与下面展平的深度图一致
         pts = create_point_cloud(gt_color, 1.005 * gt_depth, intrinsics, estimate_c2w)
+        #深度图展平为一维数组
         flat_gt_depth = gt_depth.flatten()
-        non_zero_depth_mask = flat_gt_depth > 0.  # need filter if zero depth pixels in gt_depth
-        valid_ids = np.flatnonzero(seeding_mask)
+        non_zero_depth_mask = flat_gt_depth > 0.#一个一维的深度掩模  # need filter if zero depth pixels in gt_depth
+        valid_ids = np.flatnonzero(seeding_mask)#把这个掩模也展平为一维数组，找到非零的索引
         if is_new_submap:
-            if self.new_submap_points_num < 0:
+            if self.new_submap_points_num < 0:#不用看，config里面没有设置小于零的情况
                 uniform_ids = np.arange(pts.shape[0])
             else:
+                #从点云里随即采样一些点的索引
                 uniform_ids = np.random.choice(pts.shape[0], self.new_submap_points_num, replace=False)
+            #基于梯度的采样
             gradient_ids = sample_pixels_based_on_gradient(gt_color, self.new_submap_gradient_points_num)
+            #合并采样点，将uniform_ids和gradient_ids合并
             combined_ids = np.concatenate((uniform_ids, gradient_ids))
             combined_ids = np.concatenate((combined_ids, valid_ids))
+            #去重
             sample_ids = np.unique(combined_ids)
         else:
             if self.new_frame_sample_size < 0 or len(valid_ids) < self.new_frame_sample_size:
@@ -107,6 +118,7 @@ class Mapper(object):
         sample_ids = sample_ids[non_zero_depth_mask[sample_ids]]
         return pts[sample_ids, :].astype(np.float32)
 
+    #优化子地图
     def optimize_submap(self, keyframes: list, gaussian_model: GaussianModel, iterations: int = 100) -> dict:
         """
         Optimizes the submap by refining the parameters of the 3D Gaussian based on the observations
@@ -134,18 +146,30 @@ class Mapper(object):
             render_pkg = render_gaussian_model(gaussian_model, keyframe["render_settings"])
 
             image, depth = render_pkg["color"], render_pkg["depth"]
+            # show_render_result(render_rgb=image, render_depth=depth,
+            #                    gt_depth=keyframe["depth"],gt_rgb=keyframe["color"],render_normal=render_pkg["normal"])
             if keyframe["exposure_ab"] is not None:
                 image = torch.clamp(image * torch.exp(keyframe["exposure_ab"][0]) + keyframe["exposure_ab"][1], 0, 1.)
             gt_image = keyframe["color"]
             gt_depth = keyframe["depth"]
 
             mask = (gt_depth > 0) & (~torch.isnan(depth)).squeeze(0)
+            #颜色损失
             color_loss = (1.0 - self.opt.lambda_dssim) * l1_loss(
                 image[:, mask], gt_image[:, mask]) + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-
+            #深度损失
             depth_loss = l1_loss(depth[:, mask], gt_depth[mask])
+            #正则化损失
             reg_loss = isotropic_loss(gaussian_model.get_scaling())
-            total_loss = color_loss + depth_loss + reg_loss
+            rend_dist = render_pkg["rend_dist"]
+            dist_loss = 100*rend_dist.mean()
+            rend_normal  = render_pkg['rend_normal']
+            surf_normal = render_pkg['normal']
+            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+            normal_loss = 0.1*(normal_error).mean()
+
+
+            total_loss = color_loss + depth_loss + reg_loss + dist_loss + normal_loss
             total_loss.backward()
 
             losses_dict[frame_id] = {"color_loss": color_loss.item(),
@@ -170,6 +194,7 @@ class Mapper(object):
         losses_dict["optimization_iter_time"] = optimization_time / iterations
         return losses_dict
 
+    #向子地图中添加新的高斯
     def grow_submap(self, gt_depth: np.ndarray, estimate_c2w: np.ndarray, gaussian_model: GaussianModel,
                     pts: np.ndarray, filter_cloud: bool) -> int:
         """
@@ -178,26 +203,38 @@ class Mapper(object):
             gt_depth: The ground truth depth map for the current keyframe, as a 2D numpy array.
             estimate_c2w: The estimated camera-to-world transformation matrix for the current keyframe of shape (4x4)
             gaussian_model (GaussianModel): The Gaussian model representing the current state of the submap.
-            pts: The current set of 3D points in the keyframe of shape (N, 3)
+            pts: The current set of 3D points in the keyframe of shape (N, 6)
             filter_cloud: A boolean flag indicating whether to apply filtering to the point cloud to remove
                 outliers or noise before integrating it into the map.
         Returns:
             int: The number of points added to the submap
         """
         gaussian_points = gaussian_model.get_xyz()
+        #计算当前帧的相机视锥体的角点，并变换到世界系
         camera_frustum_corners = compute_camera_frustum_corners(gt_depth, estimate_c2w, self.dataset.intrinsics)
+        #计算在视锥体内的点的索引
         reused_pts_ids = compute_frustum_point_ids(
             gaussian_points, np2torch(camera_frustum_corners), device="cuda")
+        #输入原有的视锥体内的点的索引和当前帧的点云，对于每一个新的点云通过计算其阈值范围内有无邻近点，来决定是否添加到视锥体内
         new_pts_ids = compute_new_points_ids(gaussian_points[reused_pts_ids], np2torch(pts[:, :3]).contiguous(),
                                              radius=self.new_points_radius, device="cuda")
         new_pts_ids = torch2np(new_pts_ids)
+        point_rgb = pts[:, 3:]
+        print("rgb max:", point_rgb.max(), "rgb min:", point_rgb.min(), "rgb mean:", point_rgb.mean())
+        # if new_pts_ids.shape[0] > 0:
+        #     cloud_to_add = np2ptcloud(pts[new_pts_ids, :3], pts[new_pts_ids, 3:] / 255.0)
+        #     if filter_cloud:
+        #         cloud_to_add, _ = cloud_to_add.remove_statistical_outlier(nb_neighbors=40, std_ratio=2.0)
+        #     #真正添加高斯的地方
+        #     gaussian_model.add_points(cloud_to_add)
         if new_pts_ids.shape[0] > 0:
-            cloud_to_add = np2ptcloud(pts[new_pts_ids, :3], pts[new_pts_ids, 3:] / 255.0)
+            cloud_to_add = np2ptcloud(pts[:, :3], pts[:, 3:] / 255.0)
             if filter_cloud:
                 cloud_to_add, _ = cloud_to_add.remove_statistical_outlier(nb_neighbors=40, std_ratio=2.0)
+            #真正添加高斯的地方
             gaussian_model.add_points(cloud_to_add)
-        gaussian_model._features_dc.requires_grad = False
-        gaussian_model._features_rest.requires_grad = False
+        gaussian_model._features_dc.requires_grad = True
+        gaussian_model._features_rest.requires_grad = True
         print("Gaussian model size", gaussian_model.get_size())
         return new_pts_ids.shape[0]
 
@@ -212,10 +249,10 @@ class Mapper(object):
         Returns:
             opt_dict: Dictionary with statistics about the optimization process
         """
-
+        #读取当前帧的图像和深度图（numpy数组的格式）
         _, gt_color, gt_depth, _ = self.dataset[frame_id]
         estimate_w2c = np.linalg.inv(estimate_c2w)
-
+        #将图像转换为张量
         color_transform = torchvision.transforms.ToTensor()
         keyframe = {
             "color": color_transform(gt_color).cuda(),
@@ -223,19 +260,22 @@ class Mapper(object):
             "render_settings": get_render_settings(
                 self.dataset.width, self.dataset.height, self.dataset.intrinsics, estimate_w2c),
             "exposure_ab": exposure_ab}
-
+        #计算添加新高斯的掩模
+        #如果是空白子图，就用边缘掩模，只在边缘处添加高斯（？？？）；如果不是空白子图，就用alpha掩模和深度误差掩模
         seeding_mask = self.compute_seeding_mask(gaussian_model, keyframe, is_new_submap)
+        #从新的图像帧和深度帧中创建点云，并按照规则采样
         pts = self.seed_new_gaussians(
             gt_color, gt_depth, self.dataset.intrinsics, estimate_c2w, seeding_mask, is_new_submap)
-
+        #如果是TUM_RGBD或者ScanNet数据集，并且不是新的子地图，filter_cloud被设置为True
         filter_cloud = isinstance(self.dataset, (TUM_RGBD, ScanNet)) and not is_new_submap
-
+        #在这里会向gaussian_model中添加新的高斯
         new_pts_num = self.grow_submap(gt_depth, estimate_c2w, gaussian_model, pts, filter_cloud)
 
         max_iterations = self.iterations
         if is_new_submap:
             max_iterations = self.new_submap_iterations
         start_time = time.time()
+        #优化子地图
         opt_dict = self.optimize_submap([(frame_id, keyframe)] + self.keyframes, gaussian_model, max_iterations)
         optimization_time = time.time() - start_time
         print("Optimization time: ", optimization_time)

@@ -12,7 +12,7 @@ class CustomPipeline:
     convert_SHs_python = False
     compute_cov3D_python = False
     debug = False
-
+#参数gaussians是待变换的高斯参数，这里的目的就是求一个变换矩阵，使得变换后的高斯参数在viewpoint_localizer下渲染的误差最小
 def viewpoint_localizer(viewpoint, gaussians, base_lr: float=1e-3):
     """Localize a single viewpoint in a 3DGS
 
@@ -97,9 +97,10 @@ def viewpoint_localizer(viewpoint, gaussians, base_lr: float=1e-3):
     
     return converged, rel_tsfm, loss_residual, loss_log
 
+#高斯点云配准，要注意的是源子图和目标子图的高斯点云都是世界坐标系下的，但是由于相机位姿存在误差，
+#所以两个子图之间的高斯点云之间的对应关系是不明确的，所以需要进行配准，配准的结果会被用来当作位姿图的边约束
 def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
     """_summary_
-
     Args:
         src_dict (dict): dictionary of source gaussians and its keyframes
         tgt_dict (dict): dictionary of target gaussians and its keyframes
@@ -110,6 +111,7 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
     """
     
     # print("Pairwise registration ...")
+    #计算两个子图之间的高斯点云的重叠度，如果重叠度太小，说明两个子图之间的高斯点云之间的对应关系不明确，直接跳过，不会进行配准，也不会加入位姿图
     init_overlap = compute_overlap_gaussians(src_dict['gaussians'], tgt_dict['gaussians'], 0.1)
     if init_overlap< 0.2:
         print("Initial overlap between two submaps are too small, skipping ...")
@@ -119,7 +121,7 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
             "gt_tsfm": torch.eye(4).cuda(),
             "overlap": init_overlap.item()
         }
-    
+    #拷贝子图的高斯模型和子图中的关键帧视点
     src_3dgs, src_view_list = copy.deepcopy(src_dict['gaussians']), copy.deepcopy(src_dict['cameras'])
     tgt_3dgs, tgt_view_list = copy.deepcopy(tgt_dict['gaussians']), copy.deepcopy(tgt_dict['cameras'])
     
@@ -134,17 +136,19 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
     
     # similarity choosing
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    #提取子图中的关键帧的描述子，两个都是形状为(N, D)的张量，N是关键帧的数量，D是描述子的维度
     src_desc, tgt_desc = src_dict['kf_desc'], tgt_dict['kf_desc']
-    
+    #计算两个子图之间的交叉相似矩阵[N,N]，其中的元素(i,j)表示源子图第i个的关键帧和目标子图第j个的关键帧之间的相似度
     score_cross = torch.einsum("id,jd->ij", src_desc.to(device), tgt_desc.to(device))
-    score_best_src, _ = score_cross.topk(1)
-    _, ii = score_best_src.view(-1).topk(2)
+
+    score_best_src, _ = score_cross.topk(1)#找出每一行中最大的元素，即对于源子图中每一个关键帧，找出目标子图中与其最相似的关键帧的相似程度
+    _, ii = score_best_src.view(-1).topk(2)#在源子图中找出两个关键帧，要求这两个关键帧在目标子图中的相似度最高（这两帧的图像最有可能在目标子图中也被看到过）
     
-    score_best_tgt, _ = score_cross.T.topk(1)
-    _, jj = score_best_tgt.view(-1).topk(2)
+    score_best_tgt, _ = score_cross.T.topk(1)#对于目标子图中的每一个关键帧，找出源子图中与其最相似的关键帧的相似度
+    _, jj = score_best_tgt.view(-1).topk(2)#在目标子图中找出两个关键帧，要求这两个关键帧在源子图中的相似度最高（这两帧的图像最有可能在源子图中也被看到过）
     
-    src_view_list = [src_view_list[i.item()] for i in ii]
-    tgt_view_list = [tgt_view_list[j.item()] for j in jj]
+    src_view_list = [src_view_list[i.item()] for i in ii]#被选中用来配准的源子图关键帧
+    tgt_view_list = [tgt_view_list[j.item()] for j in jj]#被选中用来配准的目标子图关键帧
     
     pred_list, residual_list, converged_list, loss_log_list = [], [], [], []
     
@@ -152,7 +156,6 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
     bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda", requires_grad=False)
     # per-cam
     for viewpoint in src_view_list:
-        
         # use rendered image as target not the raw observation
         if config["use_render"]:
             render_pkg = render(viewpoint, src_3dgs, pipe, bg_color)
@@ -160,6 +163,7 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
             viewpoint.depth = render_pkg['depth'].squeeze().detach().cpu().numpy()
         else:
             viewpoint.load_rgb()
+        #执行高斯点云配准优化，把tgt_3dgs中的高斯点云进行变换，使得在选中的视角viewpoint_localizer下，渲染的误差最小（指由src_3dgs渲染和变换后的tgt_3dgs渲染）
         converged, pred_tsfm, residual, loss_log = viewpoint_localizer(viewpoint, tgt_3dgs, config["base_lr"])
         pred_list.append(pred_tsfm)
         residual_list.append(residual)

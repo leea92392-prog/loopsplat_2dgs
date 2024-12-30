@@ -56,7 +56,7 @@ class Loop_closure(object):
         self.config = config
         self.netvlad = GlobalDesc()
         self.submap_lc_info = dict()
-        self.submap_id = 0
+        self.submap_id = 0  #当前子图的id
         self.submap_path = None
         self.pgo_count = 0
         self.n_loop_edges = 0
@@ -91,9 +91,14 @@ class Loop_closure(object):
         with torch.no_grad():
             kf_ids, submap_desc = [], []
             for key in keyframes_info.keys():
+                #对每个关键帧提取一个一维描述符
                 submap_desc.append(self.netvlad(np2torch(self.dataset[key][1], self.device).permute(2, 0, 1)[None]/255.0))
+            #拼接成特征矩阵[N, D], N为关键帧数量，D为描述符维度
             submap_desc = torch.cat(submap_desc)
+            #计算自相似矩阵，将关键帧的描述符两两内积,结果为[N, N]形状的矩阵，每一个元素为两个关键帧的相似度
             self_sim = torch.einsum("id,jd->ij", submap_desc, submap_desc)
+            #self_sim.topk（k）是取出每一行的前k个最大值，返回的是两个tensor，第一个是最大值，第二个是最大值的索引
+            #这个score_min是每个关键帧与其他关键帧的相似程度（最相似的k个关键帧）
             score_min, _ = self_sim.topk(max(int(len(submap_desc) * self.config["lc"]["min_similarity"]), 1))
             
         self.submap_lc_info[self.submap_id] = {
@@ -102,7 +107,7 @@ class Loop_closure(object):
                 "kf_desc": submap_desc,
                 "self_sim": score_min, # per image self similarity within the submap
             }
-    
+    #从存储的子图文件中加载子图数据
     def submap_loader(self, id: int):
         """load submap data for loop closure
 
@@ -119,6 +124,7 @@ class Loop_closure(object):
             c2w_est = self.c2ws_est[kf_id]
             T_gt = torch.from_numpy(c2w_gt).to(self.device).inverse()
             T_est = torch.linalg.inv(c2w_est).to(self.device)
+            #kf_id作为cam的uid
             cam_i = Camera(kf_id, None, None,
                    T_gt, 
                    self.proj_matrix, 
@@ -151,6 +157,11 @@ class Loop_closure(object):
         
         return data_dict
     
+    #检测回环，query_id为当前子图的id，返回匹配的子图id
+    #具体流程比较复杂，当前子图的所有关键帧描述子构成一个矩阵des_query：[N,D]，所有待匹配的子图的关键帧描述子构成一个矩阵des_all:[K*N,D]，
+    #对于des_query中的每一行，计算它与des_all中每一行的相似度，得到一个[N,K*N]的矩阵，每一行是当前子图的关键帧描述子与其他子图关键帧描述子的相似度
+    #然后与des_query的自相似度比较，得到大于自相似度的关键帧id（在K*N中的哪一列），然后对应到db_desc_map_id里确定是这是哪个子图的关键帧
+    #最后返回与当前子图存在回环的子图id
     def detect_closure(self, query_id: int, final=False):
         """detect closure given a submap_id, we only match it to the submaps before it
 
@@ -160,61 +171,75 @@ class Loop_closure(object):
         Returns:
             torch.Tensor: 1d vector of matched submap_id
         """
-        n_submaps = self.submap_id + 1
-        query_info = self.submap_lc_info[query_id]
+        n_submaps = self.submap_id + 1#已经生成的子图数量
+        query_info = self.submap_lc_info[query_id]#当前子图中存储的回环相关信息（子图id、关键帧id、特征矩阵、score_min）
+        #???如果final为True，那这个iterator不就是空的吗，为什么要这样写
+        #fianl为false时，iterator为range(0, query_id)，即匹配当前子图之前的所有子图（在构建位姿图里就会理解了）
         iterator = range(query_id+1, n_submaps) if final else range(query_id)
+        #从待匹配的子图中提取回环信息
         db_info_list = [self.submap_lc_info[i] for i in iterator]
         db_desc_map_id = []
-        for db_info in db_info_list:
+        for db_info in db_info_list:#遍历每个待匹配的子图
+            #对db_info里的每个关键帧描述子，将它所在的子图id加入到db_desc_map_id中
             db_desc_map_id += [db_info['submap_id'] for _ in db_info['kf_desc']]
         db_desc_map_id = torch.Tensor(db_desc_map_id).to(self.device)
         
-        query_desc = query_info['kf_desc']
+        query_desc = query_info['kf_desc']#当前子图的描述子 [N, D]，N为关键帧数量，D为描述符维度
+        #把所有待匹配的子图的描述子拼接成一个大的描述子矩阵[K*N, D]，K为待匹配的子图数量，N为每个子图的关键帧数量
         db_desc = torch.cat([db_info['kf_desc'] for db_info in db_info_list])
-        
+        #计算描述子间的余弦相似度
         with torch.no_grad():
+            #得到一个[N, K*N]的矩阵，每一行是当前子图的关键帧描述子与其他子图关键帧描述子的相似度
             cross_sim = torch.einsum("id,jd->ij", query_desc, db_desc)
-            self_sim = query_info['self_sim']
+            self_sim = query_info['self_sim']#当前子图的关键帧描述子的自相似度[N,k] 每一行是的最相似的k个关键帧
             matches = torch.argwhere(cross_sim > self_sim[:,[-1]])[:,-1]
             matched_map_ids = db_desc_map_id[matches].long().unique()
         
         # filter out invalid matches
+        #回环的子图间必须要有一定的间隔，不能太近
         filtered_mask = abs(matched_map_ids - query_id) > self.min_interval
         matched_map_ids = matched_map_ids[filtered_mask]
                 
         return matched_map_ids
-    
+    #构建位姿图
     def construct_pose_graph(self, final=False):
         """Build the pose graph from detected loops
 
         Returns:
             _type_: _description_
         """
-        n_submaps = self.submap_id + 1
-        pose_graph = o3d.pipelines.registration.PoseGraph()
+        n_submaps = self.submap_id + 1 #已经生成的子图数量
+        pose_graph = o3d.pipelines.registration.PoseGraph()#创建位姿图
         submap_list = []
         
         # initialize pose graph node from odometry with identity matrix
+        #初始化位姿图的节点，每个节点都是一个4*4的单位矩阵，读入子图数据
         for i in range(n_submaps):
             pose_graph.nodes.append(
                 o3d.pipelines.registration.PoseGraphNode(np.identity(4)))
+            #读入子图数据，成员是一个子图的字典，包括子图id，高斯模型，关键帧id，关键帧相机位姿、关键帧描述子等信息
             submap_list.append(self.submap_loader(i))
         
         # log info for edge analysis
         self.cam_dict = dict()
         self.kf_ids, self.kf_submap_ids = [], []
+        #遍历每个子图中的每个关键帧
         for submap in submap_list:
             for cam in submap['cameras']:
                 self.kf_submap_ids.append(submap["submap_id"])
+                #cam.uid是就是关键帧的id
                 self.kf_ids.append(cam.uid)
                 self.cam_dict[cam.uid] = copy.deepcopy(cam)
-        self.kf_submap_ids = np.array(self.kf_submap_ids)
+        self.kf_submap_ids = np.array(self.kf_submap_ids)#每个关键帧所在的子图id
         
         odometry_edges, loop_edges = [], []
         new_submap_valid_loop = False
+        #反向遍历每个子图，构建位姿图
         for source_id in tqdm(reversed(range(1, n_submaps))):
+            #为每个子图检测回环，返回匹配的子图id，如果final为True，只匹配source_id之后的子图,否则匹配source_id之前的子图
             matches = self.detect_closure(source_id, final)
             iterator = range(source_id+1, n_submaps) if final else range(source_id)
+            #遍历iterator中代表的子图，构建位姿图的边（前面已经初始化了所有节点，这里向这些节点间添加边）
             for target_id in iterator:
                 if abs(target_id - source_id)== 1: # odometry edge
                     reg_dict = self.pairwise_registration(submap_list[source_id], submap_list[target_id], "identity")
@@ -260,6 +285,7 @@ class Loop_closure(object):
                 
         return pose_graph, odometry_edges, loop_edges
     
+    #每次开启新的子图时都会在gaussian_slam中被调用，算是回环的入口
     def loop_closure(self, estimated_c2ws, final=False):
         '''
         Compute loop closure correction
@@ -270,15 +296,15 @@ class Loop_closure(object):
         
         print("\nDetecting loop closures ...")
         # first see if current submap generates any new edge to the pose graph
-        correction_list = []
-        self.c2ws_est = estimated_c2ws.detach()        
+        correction_list = [] #每个子图的位姿矫正
+        self.c2ws_est = estimated_c2ws.detach()     
+        #按顺序存储子图的地址   
         self.submap_paths = sorted(glob.glob(str(self.submap_path/"*.ckpt")), key=lambda x: int(x.split('/')[-1][:-5]))
-        
-        
-        if self.submap_id<3 or len(self.detect_closure(self.submap_id)) == 0:
+        #子图数量少于3或者当前子图没有检测到回环，返回一个空的位姿校正列表
+        if self.submap_id<3 or len(self.detect_closure(self.submap_id)) == 0:#执行回环检测
             print(f"\nNo loop closure detected at submap no.{self.submap_id}")
             return correction_list
-        
+        #检测到回环后，构建pose graph
         pose_graph, odometry_edges, loop_edges = self.construct_pose_graph(final)
         
         # save pgo edge analysis result
@@ -424,7 +450,7 @@ class Loop_closure(object):
         plot_filename = pgo_save_path/"submap_all_edge_te.png"
         plt.savefig(plot_filename)
         return
-    
+    #从子图中提取高斯点云、第一个关键帧的位姿、第一个关键帧的真实位姿
     def submap_to_segment(self, submap):
         segment = {
             "points": submap['gaussians'].get_xyz().detach().cpu(),
@@ -432,25 +458,28 @@ class Loop_closure(object):
             "gt_camera": submap['cameras'][0].get_T_gt.detach().cpu(),
         }
         return segment
-
+    #点云配准（注册子图节点之间的边？？？），配准的结果会被用来作为位姿图的边约束
     def pairwise_registration(self, submap_source, submap_target, method="gs_reg"):
-
+        #从子图中提取高斯点云、第一个关键帧的位姿、第一个关键帧的真实位姿
         segment_source = self.submap_to_segment(submap_source)
         segment_target = self.submap_to_segment(submap_target)
         max_correspondence_distance_coarse = 0.3
         max_correspondence_distance_fine = 0.03
-
+        #高斯点云
         source_points = segment_source["points"]
         target_points = segment_target["points"]
 
         # source_colors = segment_source["points_color"]
         # target_colors = segment_target["points_color"]
 
+        #创建o3d点云对象
         cloud_source = o3d.geometry.PointCloud()
         cloud_source.points = o3d.utility.Vector3dVector(np.array(source_points))
         # cloud_source.colors = o3d.utility.Vector3dVector(np.array(source_colors))
+        #计算点云法向量
         cloud_source.estimate_normals(
             search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=50))
+        #获取源子图第一个关键帧的相机位置
         keyframe_source = segment_source["keyframe"]
         camera_location_source = keyframe_source[:3, 3].cpu().numpy()
         cloud_source.orient_normals_towards_camera_location(
@@ -467,6 +496,7 @@ class Loop_closure(object):
             camera_location=camera_location_target)
         
         output = dict()
+        #借助真实位姿为媒介，计算源子图和目标子图之间的相对位姿
         if method == "gt":
             gt_source = segment_source["gt_camera"]
             gt_target = segment_target["gt_camera"]

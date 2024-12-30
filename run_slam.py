@@ -9,12 +9,13 @@ from src.entities.gaussian_slam import GaussianSLAM
 from src.evaluation.evaluator import Evaluator
 from src.utils.io_utils import load_config
 from src.utils.utils import setup_seed
-
+import matplotlib
+import matplotlib.pyplot as plt
 
 def get_args():
     parser = argparse.ArgumentParser(
         description='Arguments to compute the mesh')
-    parser.add_argument('config_path', type=str,
+    parser.add_argument('--config_path', type=str,
                         help='Path to the configuration yaml file')
     parser.add_argument('--input_path', default="")
     parser.add_argument('--output_path', default="")
@@ -87,6 +88,7 @@ def update_config_with_args(config, args):
 
 if __name__ == "__main__":
     args = get_args()
+    args.config_path='configs/TUM_RGBD/rgbd_dataset_freiburg1_desk.yaml'
     config = load_config(args.config_path)
     config = update_config_with_args(config, args)
 
@@ -105,9 +107,10 @@ if __name__ == "__main__":
         wandb.run.log_code(".", include_fn=lambda path: path.endswith(".py"))
 
     setup_seed(config["seed"])
+    #主体
     gslam = GaussianSLAM(config)
     gslam.run()
-
+    
     evaluator = Evaluator(gslam.output_path, gslam.output_path / "config.yaml")
     evaluator.run()
     if config["use_wandb"]:

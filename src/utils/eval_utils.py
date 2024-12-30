@@ -12,7 +12,9 @@ from evo.core.trajectory import PosePath3D, PoseTrajectory3D
 from evo.tools import plot
 from evo.tools.plot import PlotMode
 from evo.tools.settings import SETTINGS
-from matplotlib import pyplot as plt
+import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from tqdm import tqdm
@@ -70,20 +72,30 @@ def evaluate_evo(poses_gt, poses_est, plot_dir, label, monocular=False):
 
     plot_mode = evo.tools.plot.PlotMode.xy
     fig = plt.figure()
-    ax = evo.tools.plot.prepare_axis(fig, plot_mode)
+    gs = gridspec.GridSpec(2, 1, height_ratios=[1, 0.05])
+    ax = fig.add_subplot(gs[0])
+    cax = fig.add_subplot(gs[1])
+
     ax.set_title(f"ATE RMSE: {ape_stat}")
     evo.tools.plot.traj(ax, plot_mode, traj_ref, "--", "gray", "gt")
-    evo.tools.plot.traj_colormap(
-        ax,
-        traj_est_aligned,
-        ape_metric.error,
-        plot_mode,
-        min_map=ape_stats["min"],
-        max_map=ape_stats["max"],
-    )
-    ax.legend()
-    plt.savefig(os.path.join(plot_dir, "evo_2dplot_{}.png".format(str(label))), dpi=90)
 
+    mappable = evo.tools.plot.traj_colormap(
+    ax,
+    traj_est_aligned,
+    ape_metric.error,  # 误差值
+    plot_mode,
+    min_map=ape_stats["min"],
+    max_map=ape_stats["max"],
+)
+
+    # 使用 cax 参数添加颜色条
+    fig.colorbar(mappable, cax=cax, orientation='horizontal')
+
+    # 添加图例
+    ax.legend()
+
+    # 保存图像
+    plt.savefig(os.path.join(plot_dir, f"evo_2dplot_{label}.png"), dpi=90)
     return ape_stat
 
 

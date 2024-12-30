@@ -35,6 +35,7 @@ def compute_camera_frustum_corners(depth_map: np.ndarray, pose: np.ndarray, intr
     height, width = depth_map.shape
     depth_map = depth_map[depth_map > 0]
     min_depth, max_depth = depth_map.min(), depth_map.max()
+    #视锥的8个顶点
     corners = np.array(
         [
             [0, 0, min_depth],
@@ -47,10 +48,12 @@ def compute_camera_frustum_corners(depth_map: np.ndarray, pose: np.ndarray, intr
             [width, height, max_depth],
         ]
     )
+    #将视锥的像素坐标转换为相机坐标
     x = (corners[:, 0] - intrinsics[0, 2]) * corners[:, 2] / intrinsics[0, 0]
     y = (corners[:, 1] - intrinsics[1, 2]) * corners[:, 2] / intrinsics[1, 1]
     z = corners[:, 2]
     corners_3d = np.vstack((x, y, z, np.ones(x.shape[0]))).T
+    #变换到世界系
     corners_3d = pose @ corners_3d.T
     return corners_3d.T[:, :3]
 
@@ -267,7 +270,7 @@ def exceeds_motion_thresholds(current_c2w: torch.Tensor, last_submap_c2w: torch.
     exceeds_thresholds = (translation_diff > trans_thre) or torch.any(rot_euler_diff_deg > rot_thre)
     return exceeds_thresholds.item()
 
-
+#如果在新的子地图上添加高斯，要先来这儿生成一个边缘掩模
 def geometric_edge_mask(rgb_image: np.ndarray, dilate: bool = True, RGB: bool = False) -> np.ndarray:
     """ Computes an edge mask for an RGB image using geometric edges.
     Args:
@@ -282,6 +285,7 @@ def geometric_edge_mask(rgb_image: np.ndarray, dilate: bool = True, RGB: bool = 
         rgb_image, cv2.COLOR_BGR2GRAY if not RGB else cv2.COLOR_RGB2GRAY)
     if gray_image.dtype != np.uint8:
         gray_image = gray_image.astype(np.uint8)
+    #生成一个边缘掩模，只有边缘的地方是白色的，其他地方是黑色的
     edges = cv2.Canny(gray_image, threshold1=100, threshold2=200, apertureSize=3, L2gradient=True)
     # Define the structuring element for dilation, you can change the size for a thicker/thinner mask
     if dilate:
@@ -332,5 +336,4 @@ def create_point_cloud(image: np.ndarray, depth: np.ndarray, intrinsics: np.ndar
     colors = image.reshape(-1, 3)
     # Concatenate posed points with their corresponding color
     point_cloud = np.concatenate((posed_points, colors), axis=-1)
-
     return point_cloud

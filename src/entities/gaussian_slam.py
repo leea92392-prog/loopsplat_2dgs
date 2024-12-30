@@ -34,18 +34,21 @@ class GaussianSLAM(object):
 
         self.scene_name = config["data"]["scene_name"]
         self.dataset_name = config["dataset_name"]
-        self.dataset = get_dataset(config["dataset_name"])({**config["data"], **config["cam"]})
+        #self.dataset[i]会调用__getitem__方法，返回第i帧的数据，包括（idx，rgb，depth，pose），读进的是numpy数组格式
+        self.dataset = get_dataset(config["dataset_name"])(dataset_config=self.config)
 
         n_frames = len(self.dataset)
         frame_ids = list(range(n_frames))
+        #选择特定的帧ID作为mapping的帧，这里的加号不是运算符，而是要把n_frames-1加入到frame_ids中
         self.mapping_frame_ids = frame_ids[::config["mapping"]["map_every"]] + [n_frames - 1]
-
+        #待估计的相机位姿
         self.estimated_c2ws = torch.empty(len(self.dataset), 4, 4)
         self.estimated_c2ws[0] = torch.from_numpy(self.dataset[0][3])
+        #？？？
         self.exposures_ab = torch.zeros(len(self.dataset), 2)
 
         save_dict_to_yaml(config, "config.yaml", directory=self.output_path)
-
+        #根据移动距离和旋转角度判断是否开始新的子地图
         self.submap_using_motion_heuristic = config["mapping"]["submap_using_motion_heuristic"]
 
         self.keyframes_info = {}
@@ -89,6 +92,7 @@ class GaussianSLAM(object):
         os.makedirs(self.output_path / "mapping_vis", exist_ok=True)
         os.makedirs(self.output_path / "tracking_vis", exist_ok=True)
 
+    #判断是否开始新的子地图
     def should_start_new_submap(self, frame_id: int) -> bool:
         """ Determines whether a new submap should be started based on the motion heuristic or specific frame IDs.
         Args:
@@ -105,7 +109,7 @@ class GaussianSLAM(object):
         elif frame_id in self.new_submap_frame_ids:
             return True
         return False
-
+    #保存当前的高斯模型作为历史子地图
     def save_current_submap(self, gaussian_model: GaussianModel):
         """Saving the current submap's checkpoint and resetting the Gaussian model
 
@@ -115,10 +119,12 @@ class GaussianSLAM(object):
         
         gaussian_params = gaussian_model.capture_dict()
         submap_ckpt_name = str(self.submap_id).zfill(6)
+        #保存子地图的高斯参数和子地图内的关键帧信息
         submap_ckpt = {
             "gaussian_params": gaussian_params,
             "submap_keyframes": sorted(list(self.keyframes_info.keys()))
         }
+        #保存字典到文件
         save_dict_to_ckpt(
             submap_ckpt, f"{submap_ckpt_name}.ckpt", directory=self.output_path / "submaps")
     
@@ -143,6 +149,7 @@ class GaussianSLAM(object):
         self.loop_closer.submap_id += 1
         return gaussian_model
     
+    #经过位姿图优化后，更新子图的高斯模型
     def rigid_transform_gaussians(self, gaussian_params, tsfm_matrix):
         '''
         Apply a rigid transformation to the Gaussian parameters.
@@ -172,6 +179,7 @@ class GaussianSLAM(object):
 
         return gaussian_params
     
+    #经过位姿图优化后，更新关键帧的位姿
     def update_keyframe_poses(self, lc_output, submaps_kf_ids, cur_frame_id):
         '''
         Update the keyframe poses using the correction from pgo, currently update the frame range that covered by the keyframes.
@@ -209,12 +217,14 @@ class GaussianSLAM(object):
     def run(self) -> None:
         """ Starts the main program flow for Gaussian-SLAM, including tracking and mapping. """
         setup_seed(self.config["seed"])
-        gaussian_model = GaussianModel(0)
+        #默认第一个创建子图
+        gaussian_model = GaussianModel(0)#0阶球谐函数
         gaussian_model.training_setup(self.opt)
         self.submap_id = 0
 
         for frame_id in range(len(self.dataset)):
-
+            #前两帧使用真实位姿
+            print("Processing frame", frame_id,"/",len(self.dataset))
             if frame_id in [0, 1]:
                 estimated_c2w = self.dataset[frame_id][-1]
                 exposure_ab = torch.nn.Parameter(torch.tensor(
@@ -227,19 +237,22 @@ class GaussianSLAM(object):
             self.estimated_c2ws[frame_id] = np2torch(estimated_c2w)
 
             # Reinitialize gaussian model for new segment
+            #判断是否开始新的子地图
             if self.should_start_new_submap(frame_id):
                 # first save current submap and its keyframe info
                 self.save_current_submap(gaussian_model)
                 
                 # update submap infomation for loop closer
-                self.loop_closer.update_submaps_info(self.keyframes_info)
+                #在回环中更新子地图信息，主要是提取子地图中每个关键帧rgb图像的描述符，将它们拼接成一个大的描述符，
+                #记录自相似程度，记录当前子图在回环中的id
+                # self.loop_closer.update_submaps_info(self.keyframes_info)
                 
-                # apply loop closure
-                lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
+                # # apply loop closure
+                # lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
                 
-                if len(lc_output) > 0:
-                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
-                    self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
+                # if len(lc_output) > 0:
+                #     submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
+                #     self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
                 
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
                 
@@ -249,11 +262,14 @@ class GaussianSLAM(object):
                 print("\nMapping frame", frame_id)
                 gaussian_model.training_setup(self.opt, exposure_ab) 
                 estimate_c2w = torch2np(self.estimated_c2ws[frame_id])
+                #检查新的子地图的关键帧信息是否为空，一开始是空的，还没有高斯被添加
                 new_submap = not bool(self.keyframes_info)
+                #使用当前帧信息更新子地图
+                #这个opt_dict是这一帧的优化损失、优化时间、场景的重建结果
                 opt_dict = self.mapper.map(
                     frame_id, estimate_c2w, gaussian_model, new_submap, exposure_ab)
-
                 # Keyframes info update
+                #frame_id是键，keyframe_id，opt_dict是对应的值
                 self.keyframes_info[frame_id] = {
                     "keyframe_id": frame_id, 
                     "opt_dict": opt_dict,

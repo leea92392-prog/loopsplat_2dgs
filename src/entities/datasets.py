@@ -13,20 +13,20 @@ import trimesh
 class BaseDataset(torch.utils.data.Dataset):
 
     def __init__(self, dataset_config: dict):
-        self.dataset_path = Path(dataset_config["input_path"])
+        self.dataset_path = Path(dataset_config["data"]["input_path"])
         self.frame_limit = dataset_config.get("frame_limit", -1)
         self.dataset_config = dataset_config
-        self.height = dataset_config["H"]
-        self.width = dataset_config["W"]
-        self.fx = dataset_config["fx"]
-        self.fy = dataset_config["fy"]
-        self.cx = dataset_config["cx"]
-        self.cy = dataset_config["cy"]
+        self.height = dataset_config["cam"]["H"]
+        self.width = dataset_config["cam"]["W"]
+        self.fx = dataset_config["cam"]["fx"]
+        self.fy = dataset_config["cam"]["fy"]
+        self.cx = dataset_config["cam"]["cx"]
+        self.cy = dataset_config["cam"]["cy"]
 
-        self.depth_scale = dataset_config["depth_scale"]
+        self.depth_scale = dataset_config["cam"]["depth_scale"]
         self.distortion = np.array(
-            dataset_config['distortion']) if 'distortion' in dataset_config else None
-        self.crop_edge = dataset_config['crop_edge'] if 'crop_edge' in dataset_config else 0
+            dataset_config["cam"]['distortion']) if 'distortion' in dataset_config["cam"] else None
+        self.crop_edge = dataset_config["cam"]['crop_edge'] if 'crop_edge' in dataset_config["cam"] else 0
         if self.crop_edge:
             self.height -= 2 * self.crop_edge
             self.width -= 2 * self.crop_edge
@@ -37,7 +37,6 @@ class BaseDataset(torch.utils.data.Dataset):
         self.fovy = 2 * math.atan(self.height / (2 * self.fy))
         self.intrinsics = np.array(
             [[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1]])
-
         self.color_paths = []
         self.depth_paths = []
 
@@ -54,6 +53,15 @@ class Replica(BaseDataset):
         self.depth_paths = sorted(
             list((self.dataset_path / "results").glob("depth*.png")))
         self.load_poses(self.dataset_path / "traj.txt")
+        self.start = dataset_config["start_idx"]
+        self.end = dataset_config["early_stop"]
+        self.stride = dataset_config["stride"]
+        self.n_img = len(self.color_paths)
+        if self.end < 0:
+            self.end = self.n_img
+        self.color_paths = self.color_paths[self.start : self.end : self.stride]
+        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
+        self.poses = self.poses[self.start : self.end : self.stride]
         print(f"Loaded {len(self.color_paths)} frames")
 
     def load_poses(self, path):
@@ -78,6 +86,15 @@ class TUM_RGBD(BaseDataset):
         super().__init__(dataset_config)
         self.color_paths, self.depth_paths, self.poses = self.loadtum(
             self.dataset_path, frame_rate=32)
+        self.start = dataset_config["start_idx"]
+        self.end = dataset_config["early_stop"]
+        self.stride = dataset_config["stride"]
+        self.n_img = len(self.color_paths)
+        if self.end < 0:
+            self.end = self.n_img
+        self.color_paths = self.color_paths[self.start : self.end : self.stride]
+        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
+        self.poses = self.poses[self.start : self.end : self.stride]
 
     def parse_list(self, filepath, skiprows=0):
         """ read list data """

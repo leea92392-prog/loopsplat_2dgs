@@ -84,8 +84,8 @@ def merge_submaps(submaps_paths: list, radius: float = 0.0001, device: str = "cu
     pt_cloud = np2ptcloud(pts, np.zeros_like(pts))
 
     # Downsampling if the total number of points is too large
-    if len(pt_cloud.points) > 1_000_000:
-        voxel_size = 0.02
+    if len(pt_cloud.points) > 800_000:
+        voxel_size = 0.06
         pt_cloud = pt_cloud.voxel_down_sample(voxel_size)
         print(f"Downsampled point cloud to {len(pt_cloud.points)} points")
     filtered_pt_cloud, _ = pt_cloud.remove_statistical_outlier(nb_neighbors=40, std_ratio=3.0)
@@ -125,6 +125,7 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
 
     iteration = 0
     for iteration in tqdm(range(max_iterations), desc="Refinement"):
+        torch.cuda.empty_cache()
         training_frame = next(training_frames)
         gaussian_model.update_learning_rate(iteration)
         if enable_sh and iteration > 0 and iteration % 1000 == 0:

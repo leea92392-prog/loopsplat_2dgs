@@ -19,7 +19,7 @@ from src.utils.tracker_utils import (compute_camera_opt_params,
                                      transformation_to_quaternion)
 from src.utils.utils import (get_render_settings, np2torch,
                              render_gaussian_model, torch2np)
-
+from src.utils.vis_utils import *
 
 class Tracker(object):
     def __init__(self, config: dict, dataset: BaseDataset, logger: Logger) -> None:
@@ -79,6 +79,8 @@ class Tracker(object):
         render_dict = render_gaussian_model(gaussian_model, render_settings,
                                             override_means_3d=transformed_pts, override_rotations=_rotations)
         rendered_color, rendered_depth = render_dict["color"], render_dict["depth"]
+        show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,
+                               gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"])
         if self.enable_exposure:
             rendered_color = torch.clamp(torch.exp(exposure_ab[0]) * rendered_color + exposure_ab[1], 0, 1.)
         alpha_mask = render_dict["alpha"] > self.alpha_thre
@@ -138,11 +140,14 @@ class Tracker(object):
 
         last_c2w = prev_c2ws[-1]
         last_w2c = np.linalg.inv(last_c2w)
+        #相对位姿变换 init_rel是T_i_2_i-1，init_rel_w2c是T_i-1_2_i
         init_rel = init_c2w @ np.linalg.inv(last_c2w)
         init_rel_w2c = np.linalg.inv(init_rel)
+        #用上一帧的相机位姿作为参考位姿，来初始化渲染器
         reference_w2c = last_w2c
         render_settings = get_render_settings(
             self.dataset.width, self.dataset.height, self.dataset.intrinsics, reference_w2c)
+        #真正优化的是相对位姿init_rel_w2c
         opt_cam_rot, opt_cam_trans = compute_camera_opt_params(init_rel_w2c)
         if self.enable_exposure:
             exposure_ab = torch.nn.Parameter(torch.tensor(
@@ -164,6 +169,7 @@ class Tracker(object):
         color_loss, depth_loss, _, _, _ = self.compute_losses(gaussian_model, render_settings, opt_cam_rot,
                                                               opt_cam_trans, gt_color, gt_depth, depth_mask, 
                                                               exposure_ab)
+        #如果初始损失过大，增加迭代次数
         if len(self.frame_color_loss) > 0 and (
             color_loss.item() > self.init_err_ratio * np.median(self.frame_color_loss)
             or depth_loss.item() > self.init_err_ratio * np.median(self.frame_depth_loss)
@@ -218,10 +224,10 @@ class Tracker(object):
                     self.logger.log_tracking_iteration(
                         frame_id, cur_cam, gt_quat, gt_trans, total_loss, color_loss, depth_loss, iter, num_iters,
                         wandb_output=True, print_output=True)
-                elif iter % 20 == 0:
-                    self.logger.log_tracking_iteration(
-                        frame_id, cur_cam, gt_quat, gt_trans, total_loss, color_loss, depth_loss, iter, num_iters,
-                        wandb_output=False, print_output=True)
+                # elif iter % 20 == 0:
+                #     self.logger.log_tracking_iteration(
+                #         frame_id, cur_cam, gt_quat, gt_trans, total_loss, color_loss, depth_loss, iter, num_iters,
+                #         wandb_output=False, print_output=True)
 
         final_c2w = torch.inverse(torch.from_numpy(reference_w2c) @ best_w2c)
         final_c2w[-1, :] = torch.tensor([0., 0., 0., 1.], dtype=final_c2w.dtype, device=final_c2w.device)

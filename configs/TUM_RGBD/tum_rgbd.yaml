@@ -9,7 +9,7 @@ mapping:
   map_every: 1
   iterations: 100
   new_submap_iterations: 100
-  new_submap_points_num: 100000 
+  new_submap_points_num: 180000 
   new_submap_gradient_points_num: 50000 
   new_frame_sample_size: 30000 
   new_points_radius: 0.0001
@@ -34,7 +34,7 @@ tracking:
   mask_invalid_depth: True
   enable_exposure: False
 cam:
-  crop_edge: 16
+  crop_edge: 0
   depth_scale: 5000.0
 lc: 
   min_similarity: 0.5

@@ -94,8 +94,9 @@ class Evaluator(object):
 
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
+                render_settings,est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
                 render_dict = render_gaussian_model(
-                    gaussian_model, get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c))
+                    gaussian_model, render_settings, est_w2c)
                 rendered_color, rendered_depth = render_dict["color"].detach(
                 ), render_dict["depth"][0].detach()
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
@@ -171,8 +172,9 @@ class Evaluator(object):
             for keyframe_id in submap["submap_keyframes"]:
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
+                render_settings,est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
                 render_dict = render_gaussian_model(
-                    gaussian_model, get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c))
+                    gaussian_model, render_settings, est_w2c)
                 rendered_color, rendered_depth = render_dict["color"].detach(
                 ), render_dict["depth"][0].detach()
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)

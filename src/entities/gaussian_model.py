@@ -29,6 +29,7 @@ class GaussianModel:
             "xyz",
             "features_dc",
             "features_rest",
+            "rgb",
             "scaling",
             "rotation",
             "opacity",
@@ -60,6 +61,7 @@ class GaussianModel:
         self.training_setup(training_args)
         self.densification_postfix(
             params_dict["xyz"],
+            params_dict["rgb"],
             params_dict["features_dc"],
             params_dict["features_rest"],
             params_dict["opacity"],

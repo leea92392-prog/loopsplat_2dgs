@@ -71,7 +71,49 @@ def dict2device(dict: dict, device: str = "cpu") -> dict:
     return dict
 
 
-def get_render_settings(w, h, intrinsics, w2c, near=0.01, far=100, sh_degree=0):
+# def get_render_settings(w, h, intrinsics, w2c, near=0.01, far=100, sh_degree=0):
+#     """
+#     Constructs and returns a GaussianRasterizationSettings object for rendering,
+#     configured with given camera parameters.
+
+#     Args:
+#         width (int): The width of the image.
+#         height (int): The height of the image.
+#         intrinsic (array): 3*3, Intrinsic camera matrix.
+#         w2c (array): World to camera transformation matrix.
+#         near (float, optional): The near plane for the camera. Defaults to 0.01.
+#         far (float, optional): The far plane for the camera. Defaults to 100.
+
+#     Returns:
+#         GaussianRasterizationSettings: Configured settings for Gaussian rasterization.
+#     """
+#     fx, fy, cx, cy = intrinsics[0, 0], intrinsics[1,
+#                                                   1], intrinsics[0, 2], intrinsics[1, 2]
+#     w2c = torch.tensor(w2c).cuda().float()
+#     cam_center = torch.inverse(w2c)[:3, 3]
+#     viewmatrix = w2c.transpose(0, 1)
+#     opengl_proj = torch.tensor([[2 * fx / w, 0.0, -(w - 2 * cx) / w, 0.0],
+#                                 [0.0, 2 * fy / h, -(h - 2 * cy) / h, 0.0],
+#                                 [0.0, 0.0, far /
+#                                     (far - near), -(far * near) / (far - near)],
+#                                 [0.0, 0.0, 1.0, 0.0]], device='cuda').float().transpose(0, 1)
+#     full_proj_matrix = viewmatrix.unsqueeze(
+#         0).bmm(opengl_proj.unsqueeze(0)).squeeze(0)
+#     return GaussianRasterizationSettings(
+#         image_height=h,
+#         image_width=w,
+#         tanfovx=w / (2 * fx),
+#         tanfovy=h / (2 * fy),
+#         bg=torch.tensor([0, 0, 0], device='cuda').float(),
+#         scale_modifier=1.0,
+#         viewmatrix=viewmatrix,
+#         projmatrix=full_proj_matrix,
+#         sh_degree=sh_degree,
+#         campos=cam_center,
+#         prefiltered=False,
+#         debug=False)
+
+def get_render_settings(w, h, intrinsics,estimate_w2c=None, near=0.01, far=100, sh_degree=0):
     """
     Constructs and returns a GaussianRasterizationSettings object for rendering,
     configured with given camera parameters.
@@ -89,16 +131,18 @@ def get_render_settings(w, h, intrinsics, w2c, near=0.01, far=100, sh_degree=0):
     """
     fx, fy, cx, cy = intrinsics[0, 0], intrinsics[1,
                                                   1], intrinsics[0, 2], intrinsics[1, 2]
-    w2c = torch.tensor(w2c).cuda().float()
-    cam_center = torch.inverse(w2c)[:3, 3]
-    viewmatrix = w2c.transpose(0, 1)
+    w2c = torch.eye(4).cuda().float()
+    cam_center = w2c.inverse()[3, :3]
     opengl_proj = torch.tensor([[2 * fx / w, 0.0, -(w - 2 * cx) / w, 0.0],
                                 [0.0, 2 * fy / h, -(h - 2 * cy) / h, 0.0],
                                 [0.0, 0.0, far /
                                     (far - near), -(far * near) / (far - near)],
                                 [0.0, 0.0, 1.0, 0.0]], device='cuda').float().transpose(0, 1)
-    full_proj_matrix = viewmatrix.unsqueeze(
-        0).bmm(opengl_proj.unsqueeze(0)).squeeze(0)
+    full_proj_matrix = w2c.unsqueeze(0).bmm(opengl_proj.unsqueeze(0)).squeeze(0)
+    if estimate_w2c is not None:
+        est_w2c = np2torch(estimate_w2c, "cuda")
+    else:
+        est_w2c = None
     return GaussianRasterizationSettings(
         image_height=h,
         image_width=w,
@@ -106,15 +150,14 @@ def get_render_settings(w, h, intrinsics, w2c, near=0.01, far=100, sh_degree=0):
         tanfovy=h / (2 * fy),
         bg=torch.tensor([0, 0, 0], device='cuda').float(),
         scale_modifier=1.0,
-        viewmatrix=viewmatrix,
+        viewmatrix=w2c,
         projmatrix=full_proj_matrix,
         sh_degree=sh_degree,
         campos=cam_center,
         prefiltered=False,
-        debug=False)
+        debug=False) , est_w2c
 
-
-def render_gaussian_model(gaussian_model, render_settings,
+def render_gaussian_model(gaussian_model, render_settings,est_w2c,
                           override_means_3d=None, override_means_2d=None,
                           override_scales=None, override_rotations=None,
                           override_opacities=None, override_colors=None):
@@ -146,16 +189,22 @@ def render_gaussian_model(gaussian_model, render_settings,
     renderer = GaussianRasterizer(raster_settings=render_settings)
 
     if override_means_3d is None:
-        means3D = gaussian_model.get_xyz()
+         gaussians_xyz = gaussian_model._xyz.clone()
     else:
-        means3D = override_means_3d
+        gaussians_xyz = override_means_3d
 
     if override_means_2d is None:
         means2D = torch.zeros_like(
-            means3D, dtype=means3D.dtype, requires_grad=True, device="cuda")
+            gaussians_xyz, dtype=gaussians_xyz.dtype, requires_grad=True, device="cuda")
         means2D.retain_grad()
     else:
         means2D = override_means_2d
+    #提前进行坐标变换
+    xyz_ones = torch.ones(gaussians_xyz.shape[0], 1).cuda().float()
+    xyz_homo = torch.cat((gaussians_xyz, xyz_ones), dim=1)
+    gaussians_xyz_trans = (est_w2c @ xyz_homo.T).T[:,:3]
+    means3D = gaussians_xyz_trans
+
 
     if override_opacities is None:
         opacities = gaussian_model.get_opacity()
@@ -163,10 +212,11 @@ def render_gaussian_model(gaussian_model, render_settings,
         opacities = override_opacities
 
     shs, colors_precomp = None, None
-    if override_colors is not None:
-        colors_precomp = override_colors
-    else:
-        shs = gaussian_model.get_features()
+    # if override_colors is not None:
+    #     colors_precomp = override_colors
+    # else:
+    #     shs = gaussian_model.get_features()
+    colors_precomp = gaussian_model.get_rgb()
     render_args = {
         "means3D": means3D,
         "means2D": means2D,

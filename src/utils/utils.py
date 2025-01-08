@@ -212,11 +212,11 @@ def render_gaussian_model(gaussian_model, render_settings,est_w2c,
         opacities = override_opacities
 
     shs, colors_precomp = None, None
-    # if override_colors is not None:
-    #     colors_precomp = override_colors
-    # else:
-    #     shs = gaussian_model.get_features()
-    colors_precomp = gaussian_model.get_rgb()
+    if override_colors is not None:
+        colors_precomp = override_colors
+    else:
+        shs = gaussian_model.get_features()
+
     render_args = {
         "means3D": means3D,
         "means2D": means2D,

@@ -88,7 +88,8 @@ def update_config_with_args(config, args):
 
 if __name__ == "__main__":
     args = get_args()
-    args.config_path='configs/TUM_RGBD/rgbd_dataset_freiburg1_desk.yaml'
+    # args.config_path='configs/TUM_RGBD/rgbd_dataset_freiburg1_desk.yaml'
+    args.config_path='configs/UTMM/square_1.yaml'
     config = load_config(args.config_path)
     config = update_config_with_args(config, args)
 

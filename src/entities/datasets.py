@@ -8,7 +8,8 @@ import torch
 import json
 import imageio
 import trimesh
-
+from typing import List, Union
+import warnings
 
 class BaseDataset(torch.utils.data.Dataset):
 
@@ -275,7 +276,180 @@ class ScanNetPP(BaseDataset):
         depth_data = depth_data.astype(np.float32) / self.depth_scale
         return index, color_data, depth_data, self.poses[index]
 
+class UTMM(BaseDataset):
+    def __init__(self, dataset_config: dict):
+        super().__init__(dataset_config)
+        self.color_paths, self.depth_paths, self.poses = self.loadtum(
+            self.dataset_path, frame_rate=32)
+        self.start = dataset_config["start_idx"]
+        self.end = dataset_config["early_stop"]
+        self.stride = dataset_config["stride"]
+        self.n_img = len(self.color_paths)
+        self.desired_height = dataset_config["desired_height"]
+        self.desired_width = dataset_config["desired_width"]
+        self.height_downsample_ratio = float(self.desired_height) / self.height
+        self.width_downsample_ratio = float(self.desired_width) / self.width
+        K = np.eye(3)
+        K[0, 0] = self.fx
+        K[1, 1] = self.fy
+        K[0, 2] = self.cx
+        K[1, 2] = self.cy
+        K = self.scale_intrinsics(K, self.height_downsample_ratio, self.width_downsample_ratio)
+        self.fx , self.fy, self.cx, self.cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
+        self.fovx = 2 * math.atan(self.desired_width / (2 * self.fx))
+        self.fovy = 2 * math.atan(self.desired_height / (2 * self.fy))
+        self.width = self.desired_width
+        self.height = self.desired_height
+        self.intrinsics = np.array(
+            [[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1]])
+        if self.end < 0:
+            self.end = self.n_img
+        self.color_paths = self.color_paths[self.start : self.end : self.stride]
+        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
+        self.poses = self.poses[self.start : self.end : self.stride]
+        # cam2robot = np.array([
+        #     [ 0, 0, -1, 0], 
+        #     [ 1, 0,  0, 0], 
+        #     [ 0, 1,  0, 0], 
+        #     [ 0, 0,  0, 1]])
+        # self.poses = [pose @ cam2robot for pose in self.poses]
+    def parse_list(self, filepath, skiprows=0):
+        """ read list data """
+        return np.loadtxt(filepath, delimiter=' ', dtype=np.unicode_, skiprows=skiprows)
 
+    def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose, max_dt=0.08):
+        """ pair images, depths, and poses """
+        associations = []
+        for i, t in enumerate(tstamp_image):
+            if tstamp_pose is None:
+                j = np.argmin(np.abs(tstamp_depth - t))
+                if (np.abs(tstamp_depth[j] - t) < max_dt):
+                    associations.append((i, j))
+            else:
+                j = np.argmin(np.abs(tstamp_depth - t))
+                k = np.argmin(np.abs(tstamp_pose - t))
+                if (np.abs(tstamp_depth[j] - t) < max_dt) and (np.abs(tstamp_pose[k] - t) < max_dt):
+                    associations.append((i, j, k))
+        return associations
+
+    def loadtum(self, datapath, frame_rate=-1):
+        """ read video data in tum-rgbd format """
+        if os.path.isfile(os.path.join(datapath, 'groundtruth.txt')):
+            pose_list = os.path.join(datapath, 'groundtruth.txt')
+        elif os.path.isfile(os.path.join(datapath, 'pose.txt')):
+            pose_list = os.path.join(datapath, 'pose.txt')
+
+        image_list = os.path.join(datapath, 'rgb.txt')
+        depth_list = os.path.join(datapath, 'depth.txt')
+
+        image_data = self.parse_list(image_list)
+        depth_data = self.parse_list(depth_list)
+        pose_data = self.parse_list(pose_list, skiprows=1)
+        pose_vecs = pose_data[:, 1:].astype(np.float64)
+
+        tstamp_image = image_data[:, 0].astype(np.float64)
+        tstamp_depth = depth_data[:, 0].astype(np.float64)
+        tstamp_pose = pose_data[:, 0].astype(np.float64)
+        associations = self.associate_frames(
+            tstamp_image, tstamp_depth, tstamp_pose)
+
+        indicies = [0]
+        for i in range(1, len(associations)):
+            t0 = tstamp_image[associations[indicies[-1]][0]]
+            t1 = tstamp_image[associations[i][0]]
+            if t1 - t0 > 1.0 / frame_rate:
+                indicies += [i]
+
+        images, poses, depths = [], [], []
+        inv_pose = None
+        for ix in indicies:
+            (i, j, k) = associations[ix]
+            images += [os.path.join(datapath, image_data[i, 1])]
+            depths += [os.path.join(datapath, depth_data[j, 1])]
+            c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
+            if inv_pose is None:
+                inv_pose = np.linalg.inv(c2w)
+                c2w = np.eye(4)
+            else:
+                c2w = inv_pose@c2w
+            poses += [c2w.astype(np.float32)]
+
+        return images, depths, poses
+
+    def pose_matrix_from_quaternion(self, pvec):
+        """ convert 4x4 pose matrix to (t, q) """
+        from scipy.spatial.transform import Rotation
+
+        pose = np.eye(4)
+        pose[:3, :3] = Rotation.from_quat(pvec[3:]).as_matrix()
+        pose[:3, 3] = pvec[:3]
+        return pose
+    
+    def scale_intrinsics(
+        self,
+        intrinsics: Union[np.ndarray, torch.Tensor],
+        h_ratio: Union[float, int],
+        w_ratio: Union[float, int],
+    ):
+        r"""Scales the intrinsics appropriately for resized frames where
+        :math:`h_\text{ratio} = h_\text{new} / h_\text{old}` and :math:`w_\text{ratio} = w_\text{new} / w_\text{old}`
+
+        Args:
+            intrinsics (numpy.ndarray or torch.Tensor): Intrinsics matrix of original frame
+            h_ratio (float or int): Ratio of new frame's height to old frame's height
+                :math:`h_\text{ratio} = h_\text{new} / h_\text{old}`
+            w_ratio (float or int): Ratio of new frame's width to old frame's width
+                :math:`w_\text{ratio} = w_\text{new} / w_\text{old}`
+
+        Returns:
+            numpy.ndarray or torch.Tensor: Intrinsics matrix scaled approprately for new frame size
+
+        Shape:
+            - intrinsics: :math:`(*, 3, 3)` or :math:`(*, 4, 4)`
+            - Output: Matches `intrinsics` shape, :math:`(*, 3, 3)` or :math:`(*, 4, 4)`
+
+        """
+        if isinstance(intrinsics, np.ndarray):
+            scaled_intrinsics = intrinsics.astype(np.float32).copy()
+        elif torch.is_tensor(intrinsics):
+            scaled_intrinsics = intrinsics.to(torch.float).clone()
+        else:
+            raise TypeError("Unsupported input intrinsics type {}".format(type(intrinsics)))
+        if not (intrinsics.shape[-2:] == (3, 3) or intrinsics.shape[-2:] == (4, 4)):
+            raise ValueError(
+                "intrinsics must have shape (*, 3, 3) or (*, 4, 4), but had shape {} instead".format(
+                    intrinsics.shape
+                )
+            )
+        if (intrinsics[..., -1, -1] != 1).any() or (intrinsics[..., 2, 2] != 1).any():
+            warnings.warn(
+                "Incorrect intrinsics: intrinsics[..., -1, -1] and intrinsics[..., 2, 2] should be 1."
+            )
+
+        scaled_intrinsics[..., 0, 0] *= w_ratio  # fx
+        scaled_intrinsics[..., 1, 1] *= h_ratio  # fy
+        scaled_intrinsics[..., 0, 2] *= w_ratio  # cx
+        scaled_intrinsics[..., 1, 2] *= h_ratio  # cy
+        return scaled_intrinsics
+    
+    def __getitem__(self, index):
+        color_data = cv2.imread(str(self.color_paths[index]))
+        if self.distortion is not None:
+            color_data = cv2.undistort(
+                color_data, self.intrinsics, self.distortion)
+        color_data = cv2.cvtColor(color_data, cv2.COLOR_BGR2RGB)
+        color_data = cv2.resize(color_data, (self.desired_width, self.desired_height))
+        depth_data = cv2.imread(
+            str(self.depth_paths[index]), cv2.IMREAD_UNCHANGED)
+        depth_data = cv2.resize(depth_data, (self.desired_width, self.desired_height), interpolation=cv2.INTER_NEAREST)
+        depth_data = depth_data.astype(np.float32) / self.depth_scale
+        edge = self.crop_edge
+        # if edge > 0:
+        #     color_data = color_data[edge:-edge, edge:-edge]
+        #     depth_data = depth_data[edge:-edge, edge:-edge]
+        # Interpolate depth values for splatting
+        return index, color_data, depth_data, self.poses[index]
+    
 def get_dataset(dataset_name: str):
     if dataset_name == "replica":
         return Replica
@@ -285,4 +459,7 @@ def get_dataset(dataset_name: str):
         return ScanNet
     elif dataset_name == "scannetpp":
         return ScanNetPP
+    elif dataset_name == "utmm":
+        return UTMM
+
     raise NotImplementedError(f"Dataset {dataset_name} not implemented")

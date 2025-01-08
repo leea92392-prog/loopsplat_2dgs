@@ -348,11 +348,11 @@ class Evaluator(object):
             print("Could not run rendering eval")
             traceback.print_exc()
 
-        try:
-            self.run_reconstruction_eval()
-        except Exception:
-            print("Could not run reconstruction eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_reconstruction_eval()
+        # except Exception:
+        #     print("Could not run reconstruction eval")
+        #     traceback.print_exc()
         # try:
         #     self.run_global_map_eval()
         # except Exception:

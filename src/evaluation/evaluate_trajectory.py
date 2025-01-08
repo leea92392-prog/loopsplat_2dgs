@@ -3,7 +3,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.animation as animation
 
 class NumpyFloatValuesEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -118,13 +119,34 @@ def evaluate_trajectory(estimated_poses: np.ndarray, gt_poses: np.ndarray, outpu
         f.write(json.dumps(ate_aligned, cls=NumpyFloatValuesEncoder))
 
     ate_rmse, ate_rmse_aligned = ate["rmse"], ate_aligned["rmse"]
-    ax = plot_2d(
-        estimated_t, label=f"ate-rmse: {round(ate_rmse * 100, 2)} cm", color="orange")
-    ax = plot_2d(estimated_t_aligned, ax,
-                 label=f"ate-rsme (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
-    ax = plot_2d(gt_t, ax, label="GT", color="green")
-    ax.legend()
-    plt.savefig(str(output_path / "eval_trajectory.png"), dpi=300)
-    plt.close()
+    # ax = plot_2d(
+    #     estimated_t, label=f"ate-rmse: {round(ate_rmse * 100, 2)} cm", color="orange")
+    # ax = plot_2d(estimated_t_aligned, ax,
+    #              label=f"ate-rsme (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
+    # ax = plot_2d(gt_t, ax, label="GT", color="green")
+    # ax.legend()
+    # plt.savefig(str(output_path / "eval_trajectory.png"), dpi=300)
+    # plt.close()
+    # print(
+    #     f"ATE-RMSE: {ate_rmse * 100:.2f} cm, ATE-RMSE (aligned): {ate_rmse_aligned * 100:.2f} cm")
+    # Create a 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    def update(num, estimated_t, estimated_t_aligned, gt_t, ax):
+        ax.clear()
+        ax.plot(estimated_t[:num, 0], estimated_t[:num, 1], estimated_t[:num, 2], label=f"ate-rmse: {round(ate_rmse * 100, 2)} cm", color="orange")
+        ax.plot(estimated_t_aligned[:num, 0], estimated_t_aligned[:num, 1], estimated_t_aligned[:num, 2], label=f"ate-rsme (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
+        ax.plot(gt_t[:num, 0], gt_t[:num, 1], gt_t[:num, 2], label="GT", color="green")
+        ax.legend()
+        ax.set_xlim([-5, 5])
+        ax.set_ylim([-5, 5])
+        ax.set_zlim([-2, 2])
+
+    ani = animation.FuncAnimation(fig, update, frames=len(gt_t), fargs=(estimated_t, estimated_t_aligned, gt_t, ax), interval=100)
+
+    ani.save(str(output_path / "eval_trajectory_3d.gif"), writer='imagemagick', fps=10)
+    plt.show()
+
     print(
         f"ATE-RMSE: {ate_rmse * 100:.2f} cm, ATE-RMSE (aligned): {ate_rmse_aligned * 100:.2f} cm")

@@ -260,6 +260,7 @@ class GaussianSLAM(object):
 
             if frame_id in self.mapping_frame_ids:
                 print("\nMapping frame", frame_id)
+                print("It's in submap", self.submap_id)
                 gaussian_model.training_setup(self.opt, exposure_ab) 
                 estimate_c2w = torch2np(self.estimated_c2ws[frame_id])
                 #检查新的子地图的关键帧信息是否为空，一开始是空的，还没有高斯被添加
@@ -287,7 +288,7 @@ class GaussianSLAM(object):
             #         self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
             if self.enable_exposure:
                 self.exposures_ab[frame_id] = torch.tensor([exposure_ab[0].item(), exposure_ab[1].item()])
-        
+        self.save_current_submap(gaussian_model)
         save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
         if self.enable_exposure:
             save_dict_to_ckpt(self.exposures_ab, "exposures_ab.ckpt", directory=self.output_path)

@@ -3,8 +3,8 @@ dataset_name: "utmm"
 checkpoint_path: null
 use_wandb: True
 frame_limit: -1 # for debugging, set to -1 to disable
-desired_height: 660
-desired_width: 1280
+desired_height: 330
+desired_width: 640
 seed: 0
 mapping:
   new_submap_every: 50
@@ -20,6 +20,7 @@ mapping:
   pruning_thre: 0.5
   submap_using_motion_heuristic: True
 tracking:
+  use_imu: True
   gt_camera: False
   w_color_loss: 0.6
   iterations: 120

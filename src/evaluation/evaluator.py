@@ -88,7 +88,7 @@ class Evaluator(object):
 
             for keyframe_id in submap["submap_keyframes"]:
 
-                _, gt_color, gt_depth, _ = self.dataset[keyframe_id]
+                _, gt_color, gt_depth, _,_ = self.dataset[keyframe_id]
                 gt_color = color_transform(gt_color).to(self.device)
                 gt_depth = np2torch(gt_depth).to(self.device)
 

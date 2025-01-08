@@ -474,7 +474,7 @@ class Mapper(object):
             opt_dict: Dictionary with statistics about the optimization process
         """
         #读取当前帧的图像和深度图（numpy数组的格式）
-        _, gt_color, gt_depth, _ = self.dataset[frame_id]
+        _, gt_color, gt_depth,_,_ = self.dataset[frame_id]
         estimate_w2c = np.linalg.inv(estimate_c2w)
         #将图像转换为张量
         color_transform = torchvision.transforms.ToTensor()

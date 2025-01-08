@@ -226,7 +226,7 @@ class GaussianSLAM(object):
             #前两帧使用真实位姿
             print("Processing frame", frame_id,"/",len(self.dataset))
             if frame_id in [0, 1]:
-                estimated_c2w = self.dataset[frame_id][-1]
+                estimated_c2w = self.dataset[frame_id][-2]
                 exposure_ab = torch.nn.Parameter(torch.tensor(
                     0.0, device="cuda")), torch.nn.Parameter(torch.tensor(0.0, device="cuda"))
             else:

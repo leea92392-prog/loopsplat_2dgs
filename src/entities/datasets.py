@@ -79,7 +79,7 @@ class Replica(BaseDataset):
         depth_data = cv2.imread(
             str(self.depth_paths[index]), cv2.IMREAD_UNCHANGED)
         depth_data = depth_data.astype(np.float32) / self.depth_scale
-        return index, color_data, depth_data, self.poses[index]
+        return index, color_data, depth_data, self.poses[index], None
 
 
 class TUM_RGBD(BaseDataset):
@@ -184,7 +184,7 @@ class TUM_RGBD(BaseDataset):
             color_data = color_data[edge:-edge, edge:-edge]
             depth_data = depth_data[edge:-edge, edge:-edge]
         # Interpolate depth values for splatting
-        return index, color_data, depth_data, self.poses[index]
+        return index, color_data, depth_data, self.poses[index], None
 
 
 class ScanNet(BaseDataset):
@@ -225,7 +225,7 @@ class ScanNet(BaseDataset):
             color_data = color_data[edge:-edge, edge:-edge]
             depth_data = depth_data[edge:-edge, edge:-edge]
         # Interpolate depth values for splatting
-        return index, color_data, depth_data, self.poses[index]
+        return index, color_data, depth_data, self.poses[index], None
 
 
 class ScanNetPP(BaseDataset):
@@ -274,12 +274,12 @@ class ScanNetPP(BaseDataset):
         depth_data = np.asarray(imageio.imread(self.depth_paths[index]), dtype=np.int64)
         depth_data = cv2.resize(depth_data.astype(float), (self.width, self.height), interpolation=cv2.INTER_NEAREST)
         depth_data = depth_data.astype(np.float32) / self.depth_scale
-        return index, color_data, depth_data, self.poses[index]
+        return index, color_data, depth_data, self.poses[index],None
 
 class UTMM(BaseDataset):
     def __init__(self, dataset_config: dict):
         super().__init__(dataset_config)
-        self.color_paths, self.depth_paths, self.poses = self.loadtum(
+        self.color_paths, self.depth_paths, self.poses, self.imus, self.tstamps = self.loadtum(
             self.dataset_path, frame_rate=32)
         self.start = dataset_config["start_idx"]
         self.end = dataset_config["early_stop"]
@@ -307,29 +307,66 @@ class UTMM(BaseDataset):
         self.color_paths = self.color_paths[self.start : self.end : self.stride]
         self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
         self.poses = self.poses[self.start : self.end : self.stride]
-        # cam2robot = np.array([
-        #     [ 0, 0, -1, 0], 
-        #     [ 1, 0,  0, 0], 
-        #     [ 0, 1,  0, 0], 
-        #     [ 0, 0,  0, 1]])
-        # self.poses = [pose @ cam2robot for pose in self.poses]
+        cam2robot = np.array([
+            [ 0, 0, 1, 0], 
+            [ -1, 0,  0, 0], 
+            [ 0, -1,  0, 0], 
+            [ 0, 0,  0, 1]])
+        self.poses = [pose @ cam2robot for pose in self.poses]
+        self.tstamps = self.tstamps[self.start : self.end : self.stride]
+        self.use_imu = dataset_config["tracking"]["use_imu"]
+        if self.use_imu:
+            concat_imus = []
+            idx = 0
+            while idx < self.end:
+                cat_entry = torch.empty(0)
+                for i in range(self.stride):
+                    if idx >= self.end:
+                        break
+                    imu_entry = self.imus[idx]
+                    cat_entry = torch.cat([cat_entry, imu_entry], dim=0)
+                    idx += 1
+                concat_imus += [cat_entry]
+
+            self.imus = concat_imus
+    
     def parse_list(self, filepath, skiprows=0):
         """ read list data """
         return np.loadtxt(filepath, delimiter=' ', dtype=np.unicode_, skiprows=skiprows)
 
-    def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose, max_dt=0.08):
+    def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose,tstamp_imu=None,max_dt=0.08):
         """ pair images, depths, and poses """
         associations = []
+        lstart = 0
         for i, t in enumerate(tstamp_image):
-            if tstamp_pose is None:
+            if tstamp_pose is None and tstamp_imu is None:
                 j = np.argmin(np.abs(tstamp_depth - t))
-                if (np.abs(tstamp_depth[j] - t) < max_dt):
+                if np.abs(tstamp_depth[j] - t) < max_dt:
                     associations.append((i, j))
-            else:
+            elif tstamp_imu is None:
                 j = np.argmin(np.abs(tstamp_depth - t))
                 k = np.argmin(np.abs(tstamp_pose - t))
-                if (np.abs(tstamp_depth[j] - t) < max_dt) and (np.abs(tstamp_pose[k] - t) < max_dt):
+
+                if (np.abs(tstamp_depth[j] - t) < max_dt) and (
+                    np.abs(tstamp_pose[k] - t) < max_dt
+                ):
                     associations.append((i, j, k))
+            else:  # imu and pose provided
+                assert (
+                    tstamp_pose is not None and tstamp_imu is not None
+                ), "Both IMU and pose must be provided"
+                j = np.argmin(np.abs(tstamp_depth - t))
+                k = np.argmin(np.abs(tstamp_pose - t))
+                lend = np.argmin(np.abs(tstamp_imu - t))
+                l = np.arange(lstart, lend + 1, step=1)
+                if (
+                    (np.abs(tstamp_depth[j] - t) < max_dt)
+                    and (np.abs(tstamp_pose[k] - t) < max_dt)
+                    and (np.abs(tstamp_imu[lend] - t) < max_dt)
+                ):
+                    associations.append((i, j, k, l))
+                    lstart = lend + 1
+
         return associations
 
     def loadtum(self, datapath, frame_rate=-1):
@@ -341,29 +378,44 @@ class UTMM(BaseDataset):
 
         image_list = os.path.join(datapath, 'rgb.txt')
         depth_list = os.path.join(datapath, 'depth.txt')
+        imu_list = os.path.join(datapath, "imu.txt")
 
         image_data = self.parse_list(image_list)
         depth_data = self.parse_list(depth_list)
         pose_data = self.parse_list(pose_list, skiprows=1)
         pose_vecs = pose_data[:, 1:].astype(np.float64)
+        imu_data = self.parse_list(imu_list)
+        imu_vecs = imu_data[:, 1:].astype(np.float64)
 
         tstamp_image = image_data[:, 0].astype(np.float64)
         tstamp_depth = depth_data[:, 0].astype(np.float64)
         tstamp_pose = pose_data[:, 0].astype(np.float64)
+        tstamp_imu = imu_data[:, 0].astype(np.float64)
+
         associations = self.associate_frames(
-            tstamp_image, tstamp_depth, tstamp_pose)
+            tstamp_image, tstamp_depth, tstamp_pose,tstamp_imu)
 
-        indicies = [0]
-        for i in range(1, len(associations)):
-            t0 = tstamp_image[associations[indicies[-1]][0]]
-            t1 = tstamp_image[associations[i][0]]
-            if t1 - t0 > 1.0 / frame_rate:
-                indicies += [i]
+        # indicies = [0]
+        # for i in range(1, len(associations)):
+        #     t0 = tstamp_image[associations[indicies[-1]][0]]
+        #     t1 = tstamp_image[associations[i][0]]
+        #     if t1 - t0 > 1.0 / frame_rate:
+        #         indicies += [i]
 
-        images, poses, depths = [], [], []
+        images, poses, depths,imu_meas, tstamp = [], [], [],[], []
         inv_pose = None
-        for ix in indicies:
-            (i, j, k) = associations[ix]
+        # for ix in indicies:
+        #     (i, j, k) = associations[ix]
+        #     images += [os.path.join(datapath, image_data[i, 1])]
+        #     depths += [os.path.join(datapath, depth_data[j, 1])]
+        #     c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
+        #     if inv_pose is None:
+        #         inv_pose = np.linalg.inv(c2w)
+        #         c2w = np.eye(4)
+        #     else:
+        #         c2w = inv_pose@c2w
+        #     poses += [c2w.astype(np.float32)]
+        for i, j, k, l in associations:
             images += [os.path.join(datapath, image_data[i, 1])]
             depths += [os.path.join(datapath, depth_data[j, 1])]
             c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
@@ -371,10 +423,11 @@ class UTMM(BaseDataset):
                 inv_pose = np.linalg.inv(c2w)
                 c2w = np.eye(4)
             else:
-                c2w = inv_pose@c2w
+                c2w = inv_pose @ c2w
             poses += [c2w.astype(np.float32)]
-
-        return images, depths, poses
+            imu_meas += [torch.from_numpy(imu_vecs[l, :]).float()]
+            tstamp += [tstamp_image[i]]
+        return images, depths, poses, imu_meas, tstamp
 
     def pose_matrix_from_quaternion(self, pvec):
         """ convert 4x4 pose matrix to (t, q) """
@@ -432,6 +485,17 @@ class UTMM(BaseDataset):
         scaled_intrinsics[..., 1, 2] *= h_ratio  # cy
         return scaled_intrinsics
     
+    def get_c2i_tf(self):
+        """Get the transformation matrix from camera optical frame to IMU frame"""
+        tf_list = os.path.join(self.dataset_path, "tf.txt")
+
+        tf_data = self.parse_list(tf_list).astype(np.float64)
+
+        # Convert translation+quaternion to homogeneous matrix
+        i2c = self.pose_matrix_from_quaternion(tf_data)
+        c2i = np.linalg.inv(i2c)
+        return torch.from_numpy(c2i).float().to("cuda")    
+
     def __getitem__(self, index):
         color_data = cv2.imread(str(self.color_paths[index]))
         if self.distortion is not None:
@@ -448,8 +512,13 @@ class UTMM(BaseDataset):
         #     color_data = color_data[edge:-edge, edge:-edge]
         #     depth_data = depth_data[edge:-edge, edge:-edge]
         # Interpolate depth values for splatting
-        return index, color_data, depth_data, self.poses[index]
-    
+        if self.use_imu:
+            imu = self.imus[index].to("cuda").type(torch.float)
+            return index, color_data, depth_data,self.poses[index], imu
+        else:
+            return index, color_data, depth_data,self.poses[index], None
+
+
 def get_dataset(dataset_name: str):
     if dataset_name == "replica":
         return Replica

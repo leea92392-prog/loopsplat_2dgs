@@ -17,6 +17,7 @@ from src.utils.gaussian_model_utils import build_rotation
 from src.utils.tracker_utils import (compute_camera_opt_params,
                                      extrapolate_poses, multiply_quaternions,
                                      transformation_to_quaternion)
+from src.utils.pose_utils import euler_matrix
 from src.utils.utils import (get_render_settings, np2torch,
                              render_gaussian_model, torch2np)
 from src.utils.vis_utils import *
@@ -44,9 +45,15 @@ class Tracker(object):
         self.frame_color_loss = []
         self.odometry_type = self.config["odometry_type"]
         self.help_camera_initialization = self.config["help_camera_initialization"]
+        self.use_imu = self.config["use_imu"]
         self.init_err_ratio = self.config["init_err_ratio"]
         self.enable_exposure = self.config["enable_exposure"]
         self.odometer = VisualOdometer(self.dataset.intrinsics, self.config["odometer_method"])
+        self.tstamps = self.dataset.tstamps
+        self.tf = {}
+        self.tf["c2i"] = self.dataset.get_c2i_tf()
+
+
 
     def compute_losses(self, gaussian_model: GaussianModel, render_settings: dict,est_w2c,
                        gt_color: torch.Tensor, gt_depth: torch.Tensor, depth_mask: torch.Tensor,
@@ -241,7 +248,58 @@ class Tracker(object):
         rot[2, 1] = 2 * (y * z + r * x)
         rot[2, 2] = 1 - 2 * (x * x + y * y)
         return rot
+    
+    def propagate_imu(self,camm1, camm2, imu_meas_list, c2i, dt_cam, dt_imu):
+        """
+        Propagate camera pose based on IMU measurements
 
+        Args:
+            c2w (tensor): pose at idx-1
+            c2 (tensor): pose at idx-2
+            imu_meas_list (tensor): IMU measurements from last timestep to current timestep
+            c2i (tensor): camera-to-imu homogeneous transformation matrix
+            dt_cam: time between camera frames
+            dt_imu: time between imu measurements
+        Returns:
+            cam (tensor): propagated pose
+        """
+
+
+        # Transform camera frame to IMU frame
+        c2wm1 = torch.from_numpy(camm1).cuda()
+        c2wm2 = torch.from_numpy(camm2).cuda()
+        i2wm1 = c2wm1 @ torch.inverse(c2i)
+        i2wm2 = c2wm2 @ torch.inverse(c2i)
+
+        i2w = i2wm1.clone()  # Tracked IMU pose
+
+        # Get the linear velocity using the constant velocity model
+        rel_T = torch.inverse(i2wm2) @ i2wm1  # rel transform from i(now-1)->i(now-2)
+        lin_vel = rel_T[:3, 3] / dt_cam
+        G = torch.tensor([0.0, -9.80665, 0.0])
+        # Then, do IMU preintegration
+        for imu_meas in imu_meas_list:
+            lin_accel = imu_meas[25:28]
+            ang_vel = imu_meas[13:16]
+
+            # Remove the gravity component
+            lin_accel -= i2w[:3, :3].T @ G.to(i2w)
+
+            # Preintegrate
+            change_in_position = lin_vel * dt_imu + 0.5 * lin_accel * dt_imu * dt_imu
+            change_in_orientation = ang_vel * dt_imu
+
+            # Propagate pose
+            delta = euler_matrix(*change_in_orientation, axes="sxyz")
+            delta[0:3, 3] = change_in_position  # delta is i(now)->i(prev)
+            i2w = i2w @ delta
+
+            # TODO: perform covariance propagation
+
+        # Transform back to camera frame
+        c2w = i2w @ c2i
+        return c2w.detach().cpu().numpy() 
+    
     def track(self, frame_id: int, gaussian_model: GaussianModel, prev_c2ws: np.ndarray) -> np.ndarray:
         """
         Updates the camera pose estimation for the current frame based on the provided image and depth, using either ground truth poses,
@@ -253,8 +311,7 @@ class Tracker(object):
         Returns:
             The updated camera-to-world transformation matrix for the current frame.
         """
-        _, image, depth, gt_c2w = self.dataset[frame_id]
-
+        _, image, depth, gt_c2w,imu_meas = self.dataset[frame_id]
         if (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]
             self.odometer.update_last_rgbd(last_image, last_depth)
@@ -268,6 +325,16 @@ class Tracker(object):
             init_c2w = prev_c2ws[-1] @ odometer_rel
         elif self.odometry_type == "previous":
             init_c2w = prev_c2ws[-1]
+        if self.use_imu and imu_meas is not None:
+            init_c2w = self.propagate_imu(
+                        prev_c2ws[-1],
+                        prev_c2ws[-2],
+                        imu_meas,
+                        self.tf["c2i"],
+                        self.tstamps[frame_id - 1] - self.tstamps[frame_id - 2],
+                        # 1 / self.cfg["cam"]["fps"] * self.cfg["stride"],
+                        1 / 100.0,
+                    )
         exposure_ab = None
         init_w2c = np.linalg.inv(init_c2w)
         camera_T = np2torch(init_w2c, "cuda")[:3,3].requires_grad_(True)

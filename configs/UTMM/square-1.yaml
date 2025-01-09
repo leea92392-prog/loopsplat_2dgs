@@ -1,13 +1,13 @@
 inherit_from: configs/UTMM/UTMM.yaml
 data:
   input_path: /home/lee/A-LOAM-Container/data/UTMM_Dataset/square-1
-  output_path: output/UTMM/square-1_full/
+  output_path: output/UTMM/square-1_withIMU
   scene_name: square-1
 start_idx: 100
 stride: 2
 early_stop: -1
 motion_rot_thre: 50
-motion_trans_thre: 0.5
+motion_trans_thre: 1
 cam:  #intrinsic is different per scene in TUM
   H: 660 
   W: 1280 

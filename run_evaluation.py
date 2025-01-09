@@ -12,7 +12,7 @@ def get_args():
 
 if __name__ == "__main__":
     args = get_args()
-    args.checkpoint_path = "output/UTMM/ego-centric-1_test"
+    args.checkpoint_path = "output/UTMM/square-1_withIMU"
     if args.config_path == "":
         args.config_path = Path(args.checkpoint_path) / "config.yaml"
     evaluator = Evaluator(Path(args.checkpoint_path), Path(args.config_path))

@@ -8,7 +8,7 @@ mapping:
   new_submap_every: 50
   map_every: 5
   iterations: 100
-  new_submap_iterations: 1000
+  new_submap_iterations: 600
   new_submap_points_num: 600000 
   new_submap_gradient_points_num: 50000 
   new_frame_sample_size: -1 
@@ -19,8 +19,9 @@ mapping:
   submap_using_motion_heuristic: True
 tracking:
   gt_camera: False
+  use_imu: false
   w_color_loss: 0.95
-  iterations: 60
+  iterations: 80
   cam_rot_lr: 0.0002
   cam_trans_lr: 0.002
   odometry_type: "const_speed"  # gt, const_speed, odometer

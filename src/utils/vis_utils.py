@@ -1,7 +1,7 @@
 from collections import OrderedDict
 from copy import deepcopy
 from typing import List, Union
-
+import os
 import numpy as np
 import open3d as o3d
 import cv2
@@ -113,13 +113,13 @@ def draw_registration_result(source: o3d.geometry.PointCloud, target: o3d.geomet
     o3d.visualization.draw_geometries([source_temp, target_temp])
 
 def show_render_result(gt_rgb=None, gt_depth=None,est_depth=None,est_depth_scaled=None,render_rgb=None,render_depth=None,
-                       render_normal=None,render_alpha=None ):
+                       render_normal=None,gt_normal=None,render_alpha=None ,save_id=None,save_path=None):
     if gt_rgb is not None:
-        image_show = gt_rgb.detach().cpu().numpy().transpose(1, 2, 0)
-        image_show = image_show/np.max(image_show)
-        image_show = (image_show*255).astype(np.uint8)
-        image_show = cv2.cvtColor(image_show, cv2.COLOR_RGB2BGR)
-        cv2.imshow("image", image_show)
+        gt_image_show = gt_rgb.detach().cpu().numpy().transpose(1, 2, 0)
+        gt_image_show = gt_image_show/np.max(gt_image_show)
+        gt_image_show = (gt_image_show*255).astype(np.uint8)
+        gt_image_show = cv2.cvtColor(gt_image_show, cv2.COLOR_RGB2BGR)
+        cv2.imshow("image", gt_image_show)
     if gt_depth is not None:
         depth_show = gt_depth.detach().cpu().numpy()*5000
         depth_show = depth_show.astype(np.uint16)
@@ -157,11 +157,24 @@ def show_render_result(gt_rgb=None, gt_depth=None,est_depth=None,est_depth_scale
         rgb_norms[..., 2] = ((normal_show[..., 2] + 1) * 127.5).astype(np.uint8)
         rgb_norms = cv2.cvtColor(rgb_norms, cv2.COLOR_RGB2BGR)
         cv2.imshow("render_normal", rgb_norms)
+    if gt_normal is not None:
+        gt_normal_show = gt_normal.detach().cpu().numpy()
+        gt_rgb_norms = np.zeros((gt_normal_show.shape[0], gt_normal_show.shape[1], 3), dtype=np.uint8)
+        gt_rgb_norms[..., 0] = ((gt_normal_show[..., 0] + 1) * 127.5).astype(np.uint8)
+        gt_rgb_norms[..., 1] = ((gt_normal_show[..., 1] + 1) * 127.5).astype(np.uint8)
+        gt_rgb_norms[..., 2] = ((gt_normal_show[..., 2] + 1) * 127.5).astype(np.uint8)
+        gt_rgb_norms = cv2.cvtColor(gt_rgb_norms, cv2.COLOR_RGB2BGR)
+        cv2.imshow("gt_normal", gt_rgb_norms)
     if render_alpha is not None:
         alpha_show = render_alpha.detach().cpu().numpy()
         alpha_show = alpha_show/np.max(alpha_show)
         alpha_show = (alpha_show*255).astype(np.uint8)
         alpha_show = np.squeeze(alpha_show)
         cv2.imshow("render_alpha", alpha_show)
+    if save_id is not None:
+        cv2.imwrite(os.path.join(save_path, f"gt_rgb_{save_id}.png"), gt_image_show)
+        cv2.imwrite(os.path.join(save_path, f"render_depth_{save_id}.png"), render_depth_color_map)
+        cv2.imwrite(os.path.join(save_path, f"gt_depth_{save_id}.png"), gt_depth_color_map)
+        cv2.imwrite(os.path.join(save_path, f"render_norm_{save_id}.png"), rgb_norms)
     cv2.waitKey(1)
     return

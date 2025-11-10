@@ -49,9 +49,10 @@ class Tracker(object):
         self.init_err_ratio = self.config["init_err_ratio"]
         self.enable_exposure = self.config["enable_exposure"]
         self.odometer = VisualOdometer(self.dataset.intrinsics, self.config["odometer_method"])
-        self.tstamps = self.dataset.tstamps
-        self.tf = {}
-        self.tf["c2i"] = self.dataset.get_c2i_tf()
+        if self.use_imu:
+            self.tstamps = self.dataset.tstamps
+            self.tf = {}
+            self.tf["c2i"] = self.dataset.get_c2i_tf()
 
 
 
@@ -72,8 +73,8 @@ class Tracker(object):
         """
         render_dict = render_gaussian_model(gaussian_model, render_settings,est_w2c,)
         rendered_color, rendered_depth = render_dict["color"], render_dict["depth"]
-        show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,
-                               gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"])
+        # show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,
+        #                        gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"])
         if self.enable_exposure:
             rendered_color = torch.clamp(torch.exp(exposure_ab[0]) * rendered_color + exposure_ab[1], 0, 1.)
         alpha_mask = render_dict["alpha"] > 0.9
@@ -275,9 +276,11 @@ class Tracker(object):
 
         # Get the linear velocity using the constant velocity model
         rel_T = torch.inverse(i2wm2) @ i2wm1  # rel transform from i(now-1)->i(now-2)
-        lin_vel = rel_T[:3, 3] / dt_cam
+        lin_vel = rel_T[:3, 3] / dt_cam #从i(now-1)到i(now-2)的相对速度
         G = torch.tensor([0.0, -9.80665, 0.0])
+        #G = torch.tensor([0.0, 0.0, -9.80665])
         # Then, do IMU preintegration
+        #根据IMU的测量计算
         for imu_meas in imu_meas_list:
             lin_accel = imu_meas[25:28]
             ang_vel = imu_meas[13:16]
@@ -291,6 +294,7 @@ class Tracker(object):
 
             # Propagate pose
             delta = euler_matrix(*change_in_orientation, axes="sxyz")
+            #delta = torch.eye(4).to(i2w)
             delta[0:3, 3] = change_in_position  # delta is i(now)->i(prev)
             i2w = i2w @ delta
 
@@ -317,7 +321,7 @@ class Tracker(object):
             self.odometer.update_last_rgbd(last_image, last_depth)
 
         if self.odometry_type == "gt":
-            return gt_c2w
+            return gt_c2w, None
         elif self.odometry_type == "const_speed":
             init_c2w = extrapolate_poses(prev_c2ws[1:])
         elif self.odometry_type == "odometer":
@@ -343,11 +347,11 @@ class Tracker(object):
             [
                 {
                     "params": [camera_T],
-                    "lr": 0.01,
+                    "lr": self.config["cam_trans_lr"],
                 },
                 {
                     "params": [camera_q],
-                    "lr": 0.002,
+                    "lr": self.config["cam_rot_lr"],
                 },
             ]
         )
@@ -374,8 +378,6 @@ class Tracker(object):
         ):
             num_iters *= 2
             print(f"Higher initial loss, increasing num_iters to {num_iters}")
-           
-
         for iter in range(num_iters):
             color_loss, depth_loss, _, _, _, = self.compute_losses(
                 gaussian_model, render_settings, est_w2c, gt_color, gt_depth, depth_mask)
@@ -383,7 +385,7 @@ class Tracker(object):
             total_loss = (self.w_color_loss * color_loss + (1 - self.w_color_loss) * depth_loss)
             total_loss.backward()
             pose_optimizer.step()
-            # gaussian_model.scheduler.step(total_loss, epoch=iter)
+            #gaussian_model.scheduler.step(total_loss, epoch=iter)
             pose_optimizer.zero_grad(set_to_none=True)
             est_w2c = torch.eye(4, device="cuda").float()
             est_w2c[:3,:3] = self.quad2rotation(camera_q)

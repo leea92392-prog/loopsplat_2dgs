@@ -59,7 +59,12 @@ class GaussianSLAM(object):
         else:
             self.new_submap_frame_ids = frame_ids[::config["mapping"]["new_submap_every"]] + [n_frames - 1]
             self.new_submap_frame_ids.pop(0)
-
+        if "rot_thre" in config:
+            self.rot_thre = config["rot_thre"]
+            self.trans_thre = config["trans_thre"]
+        else:
+            self.rot_thre = 50
+            self.trans_thre = 0.5
         self.logger = Logger(self.output_path, config["use_wandb"])
         self.mapper = Mapper(config["mapping"], self.dataset, self.logger)
         self.tracker = Tracker(config["tracking"], self.dataset, self.logger)
@@ -103,7 +108,7 @@ class GaussianSLAM(object):
         if self.submap_using_motion_heuristic:
             if exceeds_motion_thresholds(
                 self.estimated_c2ws[frame_id], self.estimated_c2ws[self.new_submap_frame_ids[-1]],
-                    rot_thre=50, trans_thre=0.5):
+                    rot_thre=self.rot_thre, trans_thre=self.trans_thre):
                 print(f"\nNew submap at {frame_id}")
                 return True
         elif frame_id in self.new_submap_frame_ids:
@@ -257,8 +262,8 @@ class GaussianSLAM(object):
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
                 
                 gaussian_model = self.start_new_submap(frame_id, gaussian_model)
-
-            if frame_id in self.mapping_frame_ids:
+            #建图关键帧
+            if (frame_id in self.mapping_frame_ids):
                 print("\nMapping frame", frame_id)
                 print("It's in submap", self.submap_id)
                 gaussian_model.training_setup(self.opt, exposure_ab) 

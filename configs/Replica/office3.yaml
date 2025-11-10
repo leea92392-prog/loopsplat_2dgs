@@ -1,8 +1,8 @@
 inherit_from: configs/Replica/replica.yaml
-start_idx: 50
-stride: 2
+start_idx: 0
+stride: 1
 early_stop: -1
 data:
   scene_name: office3
-  input_path: /home/lee/A-LOAM-Container/data/Replica/Replica/office3
-  output_path: output/Replica/office3_00/
+  input_path: /home/lee/A-LOAM-Container/data/Replica/office3
+  output_path: output/Replica/office3/

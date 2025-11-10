@@ -163,14 +163,17 @@ class Mapper(object):
             #正则化损失
             reg_loss = isotropic_loss(gaussian_model.get_scaling())
             rend_dist = render_pkg["rend_dist"]
-            dist_loss = 100*rend_dist.mean()
+            dist_loss = 1000*rend_dist.mean()
             rend_normal  = render_pkg['rend_normal']
             surf_normal = render_pkg['normal']
             normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-            normal_loss = 0.1*(normal_error).mean()
-
-
-            total_loss = color_loss + depth_loss + reg_loss + dist_loss + normal_loss
+            normal_loss = 0.05*(normal_error).mean()
+            total_loss = color_loss + depth_loss + reg_loss
+            #print("color_loss:",color_loss.item(),"depth_loss:",depth_loss.item(),"isotropic_loss:",reg_loss.item(),"dist_loss:",dist_loss.item(),"normal_loss",normal_loss.item())
+            if self.config['use_normal_reg']:
+                total_loss +=   normal_loss
+            if self.config['use_dist_reg']:
+                total_loss +=dist_loss
             total_loss.backward()
 
             losses_dict[frame_id] = {"color_loss": color_loss.item(),
@@ -344,7 +347,7 @@ class Mapper(object):
         else:
             result = render_gaussian_model(gaussian_model, keyframe["render_settings"],keyframe["est_w2c"])
             silhouette = result["alpha"] 
-            non_presence_sil_mask = silhouette < 0.5
+            non_presence_sil_mask = silhouette < 0.6
             #深度误差掩模
             render_depth = result["depth"]
             depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)

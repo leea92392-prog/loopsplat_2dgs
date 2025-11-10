@@ -8,7 +8,7 @@ mapping:
   new_submap_every: 50
   map_every: 1
   iterations: 100
-  new_submap_iterations: 100
+  new_submap_iterations: 200
   new_submap_points_num: 180000 
   new_submap_gradient_points_num: 50000 
   new_frame_sample_size: 30000 
@@ -17,7 +17,10 @@ mapping:
   alpha_thre: 0.6
   pruning_thre: 0.5
   submap_using_motion_heuristic: True
+  use_normal_reg: true
+  use_dist_reg: true
 tracking:
+  use_imu: false
   gt_camera: False
   w_color_loss: 0.6
   iterations: 200

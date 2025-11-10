@@ -307,12 +307,6 @@ class UTMM(BaseDataset):
         self.color_paths = self.color_paths[self.start : self.end : self.stride]
         self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
         self.poses = self.poses[self.start : self.end : self.stride]
-        cam2robot = np.array([
-            [ 0, 0, 1, 0], 
-            [ -1, 0,  0, 0], 
-            [ 0, -1,  0, 0], 
-            [ 0, 0,  0, 1]])
-        self.poses = [pose @ cam2robot for pose in self.poses]
         self.tstamps = self.tstamps[self.start : self.end : self.stride]
         self.use_imu = dataset_config["tracking"]["use_imu"]
         if self.use_imu:
@@ -329,12 +323,13 @@ class UTMM(BaseDataset):
                 concat_imus += [cat_entry]
 
             self.imus = concat_imus
+        self.i2c = np.array([-0.01104814029330714,0.22456530118066098,-0.17573647511484858, -0.5, 0.5, -0.5, -0.5]).astype(np.float32)
     
     def parse_list(self, filepath, skiprows=0):
         """ read list data """
         return np.loadtxt(filepath, delimiter=' ', dtype=np.unicode_, skiprows=skiprows)
 
-    def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose,tstamp_imu=None,max_dt=0.08):
+    def associate_frames(self, tstamp_image, tstamp_depth, tstamp_pose,tstamp_imu=None,max_dt=0.12):
         """ pair images, depths, and poses """
         associations = []
         lstart = 0
@@ -395,17 +390,10 @@ class UTMM(BaseDataset):
         associations = self.associate_frames(
             tstamp_image, tstamp_depth, tstamp_pose,tstamp_imu)
 
-        # indicies = [0]
-        # for i in range(1, len(associations)):
-        #     t0 = tstamp_image[associations[indicies[-1]][0]]
-        #     t1 = tstamp_image[associations[i][0]]
-        #     if t1 - t0 > 1.0 / frame_rate:
-        #         indicies += [i]
-
         images, poses, depths,imu_meas, tstamp = [], [], [],[], []
         inv_pose = None
-        # for ix in indicies:
-        #     (i, j, k) = associations[ix]
+
+        # for i, j, k, l in associations:
         #     images += [os.path.join(datapath, image_data[i, 1])]
         #     depths += [os.path.join(datapath, depth_data[j, 1])]
         #     c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
@@ -413,21 +401,50 @@ class UTMM(BaseDataset):
         #         inv_pose = np.linalg.inv(c2w)
         #         c2w = np.eye(4)
         #     else:
-        #         c2w = inv_pose@c2w
+        #         c2w = inv_pose @ c2w
         #     poses += [c2w.astype(np.float32)]
+        #     imu_meas += [torch.from_numpy(imu_vecs[l, :]).float()]
+        #     tstamp += [tstamp_image[i]]
         for i, j, k, l in associations:
             images += [os.path.join(datapath, image_data[i, 1])]
             depths += [os.path.join(datapath, depth_data[j, 1])]
-            c2w = self.pose_matrix_from_quaternion(pose_vecs[k])
-            if inv_pose is None:
-                inv_pose = np.linalg.inv(c2w)
-                c2w = np.eye(4)
-            else:
-                c2w = inv_pose @ c2w
+            c2w = self.pose_matrix_from_quaternion_pose(pose_vecs[k])
             poses += [c2w.astype(np.float32)]
             imu_meas += [torch.from_numpy(imu_vecs[l, :]).float()]
             tstamp += [tstamp_image[i]]
         return images, depths, poses, imu_meas, tstamp
+    
+    def pose_matrix_from_quaternion_pose(self, pvec):
+        from scipy.spatial.transform import Rotation
+
+        r2w = np.eye(4)
+        r2w[:3, :3] = Rotation.from_quat(pvec[3:]).as_matrix()
+
+        # Convert from robot frame to camera optical frame
+        # z forward, x right, y down
+        c2r = np.eye(4)
+        c2r[:3, :3] = Rotation.from_matrix(
+            [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
+        ).as_matrix()
+        r2w = r2w @ c2r  # r2w * c2r
+        r2w[:3, 3] = pvec[:3]
+        return r2w
+
+    # def pose_matrix_from_quaternion_pose(self, pvec):
+    #     """convert 4x4 pose matrix to (t, q)"""
+    #     from scipy.spatial.transform import Rotation
+
+    #     r2w = np.eye(4)
+    #     r2w[:3, :3] = Rotation.from_quat(pvec[3:]).as_matrix()
+    #     r2w[:3, 3] = pvec[:3]
+    #     # Convert from robot frame to camera optical frame
+    #     # z forward, x right, y down
+    #     c2r = np.eye(4)
+    #     c2r[:3, :3] = Rotation.from_matrix(
+    #         [[0, 0, 1], [-1, 0, 0], [0, -1, 0]]
+    #     ).as_matrix()
+    #     c2w = r2w @ c2r  # r2w * c2r
+    #     return c2w
 
     def pose_matrix_from_quaternion(self, pvec):
         """ convert 4x4 pose matrix to (t, q) """
@@ -487,13 +504,14 @@ class UTMM(BaseDataset):
     
     def get_c2i_tf(self):
         """Get the transformation matrix from camera optical frame to IMU frame"""
-        tf_list = os.path.join(self.dataset_path, "tf.txt")
+        # tf_list = os.path.join(self.dataset_path, "tf.txt")
 
-        tf_data = self.parse_list(tf_list).astype(np.float64)
-
+        # tf_data = self.parse_list(tf_list).astype(np.float64)
+        tf_data = self.i2c
         # Convert translation+quaternion to homogeneous matrix
         i2c = self.pose_matrix_from_quaternion(tf_data)
         c2i = np.linalg.inv(i2c)
+
         return torch.from_numpy(c2i).float().to("cuda")    
 
     def __getitem__(self, index):

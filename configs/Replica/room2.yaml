@@ -1,5 +1,8 @@
 inherit_from: configs/Replica/replica.yaml
+start_idx: 0
+stride: 1
+early_stop: -1
 data:
   scene_name: room2
-  input_path: data/Replica-SLAM/Replica/room2/
+  input_path: /home/lee/A-LOAM-Container/data/Replica/room2/
   output_path: output/Replica/room2/

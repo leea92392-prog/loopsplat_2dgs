@@ -4,6 +4,7 @@ from argparse import ArgumentParser
 from copy import deepcopy
 from itertools import cycle
 from pathlib import Path
+import os
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -29,11 +30,12 @@ from src.utils.mapper_utils import calc_psnr
 from src.utils.utils import (get_render_settings, np2torch,
                              render_gaussian_model, setup_seed, 
                              torch2np, filter_depth_outliers)
-
+from src.utils.vis_utils import show_render_result
+from src.utils.utils import depth_to_normal
 
 class Evaluator(object):
 
-    def __init__(self, checkpoint_path, config_path, config=None, save_render=False) -> None:
+    def __init__(self, checkpoint_path, config_path, config=None, save_render=True) -> None:
         if config is None:
             self.config = load_config(config_path)
         else:
@@ -95,8 +97,14 @@ class Evaluator(object):
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
                 render_settings,est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
+                #计算真实深度图的法向量图
+                gt_normal = depth_to_normal(render_settings,gt_depth.unsqueeze(0))
+                
                 render_dict = render_gaussian_model(
                     gaussian_model, render_settings, est_w2c)
+                show_render_result(render_rgb=render_dict["color"], render_depth=render_dict["depth"],
+                               gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"],gt_normal=gt_normal,
+                               save_id=keyframe_id,save_path=self.render_path)
                 rendered_color, rendered_depth = render_dict["color"].detach(
                 ), render_dict["depth"][0].detach()
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
@@ -160,7 +168,7 @@ class Evaluator(object):
             voxel_length=5.0 * scale / 512.0,
             sdf_trunc=0.04 * scale,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
-
+        trajectory_points = []
         submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
         for submap_path in tqdm(submaps_paths):
             submap = torch.load(submap_path, map_location=self.device)
@@ -190,6 +198,7 @@ class Evaluator(object):
                     depth_trunc=30,
                     convert_rgb_to_intensity=False)
                 volume.integrate(rgbd, intrinsic, estimate_w2c)
+                trajectory_points.append(estimate_c2w[:3, 3])
 
         o3d_mesh = volume.extract_triangle_mesh()
         compensate_vector = (-0.0 * scale / 512.0, 2.5 *
@@ -199,12 +208,188 @@ class Evaluator(object):
         file_name = self.checkpoint_path / "mesh" / "cleaned_mesh.ply"
         o3d.io.write_triangle_mesh(str(file_name), o3d_mesh)
         print(f"Reconstructed mesh saved to {file_name}")
-        if self.config["dataset_name"] == "replica":
-            evaluate_reconstruction(file_name,
-                                    f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_mesh_cull_virt_cams.ply",
-                                    f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_pc_unseen.npy",
-                                    self.checkpoint_path)
 
+        trajectory_pcd = o3d.geometry.PointCloud()
+        trajectory_pcd.points = o3d.utility.Vector3dVector(trajectory_points)
+        o3d.visualization.draw_geometries([o3d_mesh])
+
+        o3d_pcd = volume.extract_point_cloud()
+        o3d.io.write_point_cloud(str(self.checkpoint_path / "mesh" / "reconstructed_point_cloud.ply"), o3d_pcd)
+        print("Reconstructed point cloud saved.")
+        # 可视化点云
+        o3d.visualization.draw_geometries([o3d_pcd])
+        # if self.config["dataset_name"] == "replica":
+        #     evaluate_reconstruction(file_name,
+        #                             f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_mesh_cull_virt_cams.ply",
+        #                             f"data/Replica-SLAM/cull_replica/{self.scene_name}/gt_pc_unseen.npy",
+        #                             self.checkpoint_path)
+    
+
+
+    # def run_mesh_vis(self):
+    #     """ vislize the mesh"""
+    #     print("Running vis...")
+    #     trajectory_points = []
+    #     submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+    #     for submap_path in tqdm(submaps_paths):
+    #         submap = torch.load(submap_path, map_location=self.device)
+    #         for keyframe_id in submap["submap_keyframes"]:
+    #             estimate_c2w = self.estimated_c2w[keyframe_id]
+    #             estimate_w2c = np.linalg.inv(estimate_c2w)
+    #             trajectory_points.append(estimate_c2w[:3, 3])
+    #     file_name = self.checkpoint_path / "mesh" / "cleaned_mesh.ply"
+    #     o3d_mesh = o3d.io.read_triangle_mesh(str(file_name))
+    #     trajectory_lines = []
+    #     for i in range(len(trajectory_points) - 1):
+    #         trajectory_lines.append([i, i + 1])
+    #     trajectory_line_set = o3d.geometry.LineSet()
+    #     trajectory_line_set.points = o3d.utility.Vector3dVector(trajectory_points)
+    #     trajectory_line_set.lines = o3d.utility.Vector2iVector(trajectory_lines)
+    #     # 设置轨迹的颜色
+    #     colors = [[0, 1, 0] for _ in range(len(trajectory_lines))]  # 绿色
+    #     trajectory_line_set.colors = o3d.utility.Vector3dVector(colors)
+    #     # 定义回调函数
+    #     def save_image(vis):
+    #         global image_counter
+    #         screenshots_dir = self.checkpoint_path / "mesh11"
+    #         if not os.path.exists(screenshots_dir):
+    #             os.makedirs(screenshots_dir)
+    #         image_path = screenshots_dir/f"visualization_{image_counter}.png"
+    #         vis.capture_screen_image(str(image_path))
+    #         print(f"Saved {image_path}")
+    #         image_counter += 1
+    #         return False
+    #     global image_counter
+    #     image_counter = 0
+    #     # 可视化重建的网格和轨迹线段
+    #     # 从网格采样点云（均匀采样，例如 100000 个点）
+    #     o3d_pcd = o3d_mesh.sample_points_uniformly(number_of_points=60000)
+    #     # 保存点云
+    #     o3d.io.write_point_cloud(str(self.checkpoint_path / "mesh" / "reconstructed_pcd.ply"), o3d_pcd)
+    #     print("Reconstructed point cloud saved.")
+    #     # 可视化
+    #     o3d.visualization.draw_geometries([o3d_pcd])
+    #     vis = o3d.visualization.VisualizerWithKeyCallback()
+    #     vis.create_window()
+    #     vis.add_geometry(o3d_mesh)
+    #     opt = vis.get_render_option()
+    #     opt.background_color = np.asarray([1, 1, 1])
+    #     # opt.line_width = 5.0
+    #     vis.add_geometry(trajectory_line_set)
+    #     # 注册按键回调函数
+    #     vis.register_key_callback(ord("S"), save_image)
+    #     vis.run()
+    #     vis.destroy_window()
+
+    def run_mesh_vis(self):
+        """ visualize the mesh with trajectory """
+        print("Running visualization...")
+        
+        # 收集轨迹点
+        trajectory_points = []
+        submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        for submap_path in tqdm(submaps_paths):
+            submap = torch.load(submap_path, map_location=self.device)
+            for keyframe_id in submap["submap_keyframes"]:
+                estimate_c2w = self.estimated_c2w[keyframe_id]
+                trajectory_points.append(estimate_c2w[:3, 3])
+        
+        # 读取网格
+        file_name = self.checkpoint_path / "mesh" / "cleaned_mesh.ply"
+        o3d_mesh = o3d.io.read_triangle_mesh(str(file_name))
+        
+        # ==== 关键修改：创建圆柱体轨迹 ====
+        trajectory_cylinders = o3d.geometry.TriangleMesh()
+        
+        # 轨迹颜色 (绿色)
+        trajectory_color = [0, 1, 0]  # RGB 绿色
+        
+        # 轨迹半径 (控制线宽)
+        trajectory_radius = 0.01  # 增大此值使轨迹更粗
+        
+        for i in range(len(trajectory_points) - 1):
+            start = trajectory_points[i]
+            end = trajectory_points[i + 1]
+            segment_length = np.linalg.norm(end - start)
+            
+            # 创建两点之间的圆柱体
+            cylinder = o3d.geometry.TriangleMesh.create_cylinder(
+                radius=trajectory_radius,
+                height=segment_length,
+                resolution=20,  # 圆柱体侧面细分程度
+                split=1
+            )
+            
+            # 计算方向向量
+            direction = end - start
+            direction_normalized = direction / segment_length
+            
+            # 计算旋转使圆柱体朝向正确方向
+            # 默认圆柱体沿Y轴方向，需要旋转到实际方向
+            z_axis = np.array([0, 0, 1])
+            rotation_axis = np.cross(z_axis, direction_normalized)
+            
+            if np.linalg.norm(rotation_axis) > 1e-6:
+                rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                rotation_angle = np.arccos(np.dot(z_axis, direction_normalized))
+                rotation_matrix = o3d.geometry.get_rotation_matrix_from_axis_angle(
+                    rotation_axis * rotation_angle
+                )
+            else:
+                # 方向平行于Z轴时不需要旋转
+                rotation_matrix = np.eye(3)
+            
+            # 应用旋转和平移
+            cylinder.rotate(rotation_matrix, center=[0, 0, 0])
+            cylinder.translate((start + end) / 2)
+            
+            # 设置颜色
+            cylinder.paint_uniform_color(trajectory_color)
+            
+            # 添加到轨迹集合
+            trajectory_cylinders += cylinder
+        
+        # 回调函数和计数器
+        global image_counter
+        image_counter = 0
+        
+        def save_image(vis):
+            global image_counter
+            screenshots_dir = self.checkpoint_path / "mesh11"
+            if not os.path.exists(screenshots_dir):
+                os.makedirs(screenshots_dir)
+            image_path = screenshots_dir/f"visualization_{image_counter}.png"
+            vis.capture_screen_image(str(image_path))
+            print(f"Saved {image_path}")
+            image_counter += 1
+            return False
+        
+        # 创建可视化器
+        vis = o3d.visualization.VisualizerWithKeyCallback()
+        vis.create_window()
+        
+        # 添加网格和轨迹
+        vis.add_geometry(o3d_mesh)
+        vis.add_geometry(trajectory_cylinders)
+        
+        # 设置背景颜色为白色
+        render_opt = vis.get_render_option()
+        render_opt.background_color = np.asarray([1, 1, 1])  # 白色背景
+        
+        # 注册按键回调函数
+        vis.register_key_callback(ord("S"), save_image)
+        
+        # 运行可视化
+        vis.run()
+        vis.destroy_window()
+        
+        # 从网格采样点云（均匀采样）
+        o3d_pcd = o3d_mesh.sample_points_uniformly(number_of_points=60000)
+        o3d.io.write_point_cloud(str(self.checkpoint_path / "mesh" / "reconstructed_pcd.ply"), o3d_pcd)
+        print("Reconstructed point cloud saved.")
+        
+        # 可视化点云
+        o3d.visualization.draw_geometries([o3d_pcd])
 
     def run_global_map_eval(self, init_from='mesh'):
         """ Merges the map, evaluates it over training and novel views 
@@ -348,11 +533,11 @@ class Evaluator(object):
             print("Could not run rendering eval")
             traceback.print_exc()
 
-        # try:
-        #     self.run_reconstruction_eval()
-        # except Exception:
-        #     print("Could not run reconstruction eval")
-        #     traceback.print_exc()
+        try:
+            self.run_reconstruction_eval()
+        except Exception:
+            print("Could not run reconstruction eval")
+            traceback.print_exc()
         # try:
         #     self.run_global_map_eval()
         # except Exception:

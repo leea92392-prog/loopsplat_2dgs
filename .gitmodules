@@ -1,6 +1,6 @@
 [submodule "thirdparty/Hierarchical-Localization"]
 	path = thirdparty/Hierarchical-Localization
-	url = https://github.com/cvg/Hierarchical-Localization.git
+	url = git@github.com:13145497683/Hierarchical-Localization.git
 [submodule "diff-surfel-rasterization"]
 	path = diff-surfel-rasterization
-	url = git@github.com:hbb1/diff-surfel-rasterization.git
+	url = git@github.com:13145497683/diff-surfel-rasterization.git

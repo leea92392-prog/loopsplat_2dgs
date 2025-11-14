@@ -73,8 +73,7 @@ class Tracker(object):
         """
         render_dict = render_gaussian_model(gaussian_model, render_settings,est_w2c,)
         rendered_color, rendered_depth = render_dict["color"], render_dict["depth"]
-        # show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,
-        #                        gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"])
+        #show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,render_normal=render_dict["normal"])
         if self.enable_exposure:
             rendered_color = torch.clamp(torch.exp(exposure_ab[0]) * rendered_color + exposure_ab[1], 0, 1.)
         alpha_mask = render_dict["alpha"] > 0.9

@@ -250,14 +250,14 @@ class GaussianSLAM(object):
                 # update submap infomation for loop closer
                 #在回环中更新子地图信息，主要是提取子地图中每个关键帧rgb图像的描述符，将它们拼接成一个大的描述符，
                 #记录自相似程度，记录当前子图在回环中的id
-                # self.loop_closer.update_submaps_info(self.keyframes_info)
+                self.loop_closer.update_submaps_info(self.keyframes_info)
                 
                 # # apply loop closure
-                # lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
+                lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
                 
-                # if len(lc_output) > 0:
-                #     submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
-                #     self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
+                if len(lc_output) > 0:
+                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
+                    self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
                 
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
                 

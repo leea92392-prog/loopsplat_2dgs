@@ -16,8 +16,8 @@ if __name__ == "__main__":
     #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg1_desk_final_0"
     #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
     #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg2_xyz_final"
-    #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_outout/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg1_desk_final"
-    #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_outout/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
+    #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_output/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg1_desk_final"
+    args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_output/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
     #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_outout/2DGS_SLAM_outout/2dgs-slam/Replica/office0"
 
     if args.config_path == "":

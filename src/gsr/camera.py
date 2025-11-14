@@ -169,11 +169,19 @@ class Camera(nn.Module):
         T[:3, :3] = self.R_gt
         T[:3, 3] = self.T_gt
         return T
-
+    
+    @property  
+    def intrinsics(self):  
+        return np.array([  
+            [self.fx, 0, self.cx],  
+            [0, self.fy, self.cy],  
+            [0, 0, 1]  
+        ])
+    
     def load_rgb(self, image=None):
         
         if image==None and hasattr(self, "rgb_path"):
-            self.original_image = torch.from_numpy(np.array(Image.open(self.rgb_path))).permute(2, 0, 1).cuda().float() / 255.0
+            # self.original_image = torch.from_numpy(np.array(Image.open(self.rgb_path))).permute(2, 0, 1).cuda().float() / 255.0
             self.compute_grad_mask(self.config)
             
         if image is not None:

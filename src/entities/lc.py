@@ -120,28 +120,29 @@ class Loop_closure(object):
         submap_cams = []
         
         for kf_id in submap_dict['submap_keyframes']:
-            _, rgb, depth, c2w_gt = self.dataset[kf_id]
+            _, rgb, depth, c2w_gt,_ = self.dataset[kf_id]
             c2w_est = self.c2ws_est[kf_id]
             T_gt = torch.from_numpy(c2w_gt).to(self.device).inverse()
             T_est = torch.linalg.inv(c2w_est).to(self.device)
             #kf_id作为cam的uid
-            cam_i = Camera(kf_id, None, None,
-                   T_gt, 
-                   self.proj_matrix, 
-                   self.config["cam"]["fx"],
-                   self.config["cam"]["fx"],
-                   self.config["cam"]["cx"],
-                   self.config["cam"]["cy"],
-                   self.fovx, 
-                   self.fovy, 
-                   self.config["cam"]["H"], 
-                   self.config["cam"]["W"])
+            cam_i = Camera(kf_id, None, None,  
+                T_gt,   
+                self.proj_matrix,   
+                self.dataset.fx,      # 从dataset获取  
+                self.dataset.fy,      # 从dataset获取  
+                self.dataset.cx,      # 从dataset获取  
+                self.dataset.cy,      # 从dataset获取  
+                self.dataset.fovx,   
+                self.dataset.fovy,   
+                self.dataset.height,  # 从dataset获取  
+                self.dataset.width)   # 从dataset获取
             cam_i.R = T_est[:3, :3]
             cam_i.T = T_est[:3, 3]
             rgb_path = self.dataset.color_paths[kf_id]
             depth_path = self.dataset.depth_paths[kf_id]
-            depth = np.array(Image.open(depth_path)) / self.config['cam']['depth_scale']
+            # depth = np.array(Image.open(depth_path)) / self.config['cam']['depth_scale']
             cam_i.depth = depth
+            cam_i.original_image = torch.from_numpy(rgb).permute(2, 0, 1).float().to(self.device) / 255.0            
             cam_i.rgb_path = rgb_path
             cam_i.depth_path = depth_path
             cam_i.config = self.config
@@ -229,7 +230,29 @@ class Loop_closure(object):
                 self.kf_submap_ids.append(submap["submap_id"])
                 #cam.uid是就是关键帧的id
                 self.kf_ids.append(cam.uid)
-                self.cam_dict[cam.uid] = copy.deepcopy(cam)
+                #这个地方，当子图过多，关键帧过多的时候会有显存溢出
+                #self.cam_dict[cam.uid] = copy.deepcopy(cam)
+                light_cam = Camera(  
+                    uid=cam.uid,  
+                    color=None,  # 不保存图像  
+                    depth=None,  # 不保存深度  
+                    gt_T=cam.get_T_gt.detach(),  # 移到 CPU  
+                    projection_matrix=cam.projection_matrix,  
+                    fx=cam.fx,  
+                    fy=cam.fy,  
+                    cx=cam.cx,  
+                    cy=cam.cy,  
+                    fovx=cam.FoVx,  
+                    fovy=cam.FoVy,  
+                    image_height=cam.image_height,  
+                    image_width=cam.image_width,  
+                    device=cam.device   # 使用 CPU  
+                )  
+                light_cam.R = cam.R.detach()  
+                light_cam.T = cam.T.detach()  
+                light_cam.R_gt = cam.R_gt.detach()  
+                light_cam.T_gt = cam.T_gt.detach()
+                self.cam_dict[cam.uid] = light_cam
         self.kf_submap_ids = np.array(self.kf_submap_ids)#每个关键帧所在的子图id
         
         odometry_edges, loop_edges = [], []
@@ -282,7 +305,10 @@ class Loop_closure(object):
             
             if source_id == self.submap_id and not new_submap_valid_loop:
                 break    
-                
+        for submap in submap_list:  
+            for cam in submap['cameras']:  
+                cam.clean()  # 释放图像数据  
+            del submap['gaussians']        
         return pose_graph, odometry_edges, loop_edges
     
     #每次开启新的子图时都会在gaussian_slam中被调用，算是回环的入口
@@ -310,7 +336,6 @@ class Loop_closure(object):
         # save pgo edge analysis result
         
         if len(loop_edges)>0 and len(loop_edges) > self.n_loop_edges: 
-            
             print("Optimizing PoseGraph ...")
             option = o3d.pipelines.registration.GlobalOptimizationOption(
                 max_correspondence_distance=self.max_correspondence_distance_fine,

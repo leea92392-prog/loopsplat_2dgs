@@ -108,15 +108,16 @@ class Loop_closure(object):
                 "self_sim": score_min, # per image self similarity within the submap
             }
     #从存储的子图文件中加载子图数据
-    def submap_loader(self, id: int):
+    def submap_loader(self, id: int,load_gaussian=True):
         """load submap data for loop closure
 
         Args:
             id (int): submap id to load
         """
         submap_dict = torch.load(self.submap_paths[id], map_location=torch.device(self.device))
-        gaussians = GaussianModel(sh_degree=0)
-        gaussians.restore_from_params(submap_dict['gaussian_params'], self.opt)
+        if load_gaussian==True:
+            gaussians = GaussianModel(sh_degree=0)
+            gaussians.restore_from_params(submap_dict['gaussian_params'], self.opt)
         submap_cams = []
         
         for kf_id in submap_dict['submap_keyframes']:
@@ -147,14 +148,21 @@ class Loop_closure(object):
             cam_i.depth_path = depth_path
             cam_i.config = self.config
             submap_cams.append(cam_i)
-        
-        data_dict = {
-            "submap_id": id,
-            "gaussians": gaussians,
-            "kf_ids": submap_dict['submap_keyframes'],
-            "cameras": submap_cams,
-            "kf_desc": self.submap_lc_info[id]['kf_desc']
-            }
+        if load_gaussian==True:
+            data_dict = {
+                "submap_id": id,
+                "gaussians": gaussians,
+                "kf_ids": submap_dict['submap_keyframes'],
+                "cameras": submap_cams,
+                "kf_desc": self.submap_lc_info[id]['kf_desc']
+                }
+        else:
+            data_dict = {
+                "submap_id": id,
+                "kf_ids": submap_dict['submap_keyframes'],
+                "cameras": submap_cams,
+                "kf_desc": self.submap_lc_info[id]['kf_desc']
+                }
         
         return data_dict
     
@@ -219,7 +227,7 @@ class Loop_closure(object):
             pose_graph.nodes.append(
                 o3d.pipelines.registration.PoseGraphNode(np.identity(4)))
             #读入子图数据，成员是一个子图的字典，包括子图id，高斯模型，关键帧id，关键帧相机位姿、关键帧描述子等信息
-            submap_list.append(self.submap_loader(i))
+            submap_list.append(self.submap_loader(i,load_gaussian=False))
         
         # log info for edge analysis
         self.cam_dict = dict()
@@ -259,13 +267,15 @@ class Loop_closure(object):
         new_submap_valid_loop = False
         #反向遍历每个子图，构建位姿图
         for source_id in tqdm(reversed(range(1, n_submaps))):
+            source_submap = self.submap_loader(source_id,load_gaussian=True)
             #为每个子图检测回环，返回匹配的子图id，如果final为True，只匹配source_id之后的子图,否则匹配source_id之前的子图
             matches = self.detect_closure(source_id, final)
             iterator = range(source_id+1, n_submaps) if final else range(source_id)
             #遍历iterator中代表的子图，构建位姿图的边（前面已经初始化了所有节点，这里向这些节点间添加边）
             for target_id in iterator:
+                target_submap = self.submap_loader(target_id,load_gaussian=True)
                 if abs(target_id - source_id)== 1: # odometry edge
-                    reg_dict = self.pairwise_registration(submap_list[source_id], submap_list[target_id], "identity")
+                    reg_dict = self.pairwise_registration(source_submap, target_submap, "identity")
                     transformation = reg_dict['transformation']
                     information = reg_dict['information']
                     pose_graph.edges.append(
@@ -275,20 +285,20 @@ class Loop_closure(object):
                                                                 information,
                                                                 uncertain=False))
                     # analyse 
-                    gt_dict = self.pairwise_registration(submap_list[source_id], submap_list[target_id], "gt")
+                    gt_dict = self.pairwise_registration(source_submap, target_submap, "gt")
                     ae = roma.rotmat_geodesic_distance(torch.from_numpy(gt_dict['transformation'][:3,:3]), torch.from_numpy(reg_dict['transformation'][:3, :3])) * 180 /torch.pi
                     te = np.linalg.norm(gt_dict['transformation'][:3,3] - reg_dict["transformation"][:3,3])
                     odometry_edges.append((source_id, target_id, ae.item(), te.item()))
                     # TODO: update odometry edge with the PGO_edge class
 
                 elif target_id in matches: # loop closure edge
-                    reg_dict = self.pairwise_registration(submap_list[source_id], submap_list[target_id], "gs_reg")
+                    reg_dict = self.pairwise_registration(source_submap, target_submap, "gs_reg")
                     if not reg_dict['successful']: continue
                     
                     if np.isnan(reg_dict["transformation"][:3,3]).any() or reg_dict["transformation"][3,3]!=1.0: continue
                     
                     # analyse 
-                    gt_dict = self.pairwise_registration(submap_list[source_id], submap_list[target_id], "gt")
+                    gt_dict = self.pairwise_registration(source_submap, target_submap, "gt")
                     ae = roma.rotmat_geodesic_distance(torch.from_numpy(reg_dict['transformation'][:3,:3]), torch.from_numpy(gt_dict['transformation'][:3, :3])) * 180 /torch.pi
                     te = np.linalg.norm(gt_dict['transformation'][:3,3] - reg_dict["transformation"][:3,3])
                     loop_edges.append((source_id, target_id, ae.item(), te.item()))
@@ -302,13 +312,16 @@ class Loop_closure(object):
                                                                 information,
                                                                 uncertain=True))
                     new_submap_valid_loop = True
+                del target_submap  
+                torch.cuda.empty_cache()  
+            del source_submap
+            torch.cuda.empty_cache()
             
             if source_id == self.submap_id and not new_submap_valid_loop:
                 break    
         for submap in submap_list:  
             for cam in submap['cameras']:  
                 cam.clean()  # 释放图像数据  
-            del submap['gaussians']        
         return pose_graph, odometry_edges, loop_edges
     
     #每次开启新的子图时都会在gaussian_slam中被调用，算是回环的入口

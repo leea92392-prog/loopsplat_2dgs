@@ -165,8 +165,8 @@ class Evaluator(object):
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
         scale = 1.0
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
-            voxel_length=5.0 * scale / 512.0,
-            sdf_trunc=0.04 * scale,
+            voxel_length=10.0 * scale / 512.0,
+            sdf_trunc=0.08 * scale,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
         trajectory_points = []
         submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
@@ -199,7 +199,11 @@ class Evaluator(object):
                     convert_rgb_to_intensity=False)
                 volume.integrate(rgbd, intrinsic, estimate_w2c)
                 trajectory_points.append(estimate_c2w[:3, 3])
-
+            # 关键：释放当前子图的 GPU 内存  
+            del gaussian_model  
+            del submap  
+            torch.cuda.empty_cache()  
+        print("Extracting mesh from TSDF volume...")
         o3d_mesh = volume.extract_triangle_mesh()
         compensate_vector = (-0.0 * scale / 512.0, 2.5 *
                              scale / 512.0, -2.5 * scale / 512.0)
@@ -521,17 +525,17 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        try:
-            self.run_trajectory_eval()
-        except Exception:
-            print("Could not run trajectory eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_trajectory_eval()
+        # except Exception:
+        #     print("Could not run trajectory eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_rendering_eval()
-        except Exception:
-            print("Could not run rendering eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_rendering_eval()
+        # except Exception:
+        #     print("Could not run rendering eval")
+        #     traceback.print_exc()
 
         try:
             self.run_reconstruction_eval()

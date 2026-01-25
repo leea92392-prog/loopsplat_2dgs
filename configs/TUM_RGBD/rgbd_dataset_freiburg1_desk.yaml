@@ -1,10 +1,10 @@
 inherit_from: configs/TUM_RGBD/tum_rgbd.yaml
 data:
   input_path: /home/lee/A-LOAM-Container/data/TUM_RGBD/rgbd_dataset_freiburg1_desk
-  output_path: output/TUM_RGBD/rgbd_dataset_freiburg1_desk__mini_ba/
+  output_path: output/TUM_RGBD/rgbd_dataset_freiburg1_desk_mini_ba
   scene_name: rgbd_dataset_freiburg1_desk
 start_idx: 50
-stride: 1
+stride: 2
 early_stop: -1
 rot_thre: 50
 trans_thre: 0.5

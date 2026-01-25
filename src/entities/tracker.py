@@ -316,6 +316,7 @@ class Tracker(object):
         Returns:
             The updated camera-to-world transformation matrix for the current frame.
         """
+        #depth是numpy float32格式，intrinsics是np.array格式
         _, image, depth, gt_c2w,imu_meas = self.dataset[frame_id]
         intrinsics = self.dataset.intrinsics  
         if self.use_pose_utils:  

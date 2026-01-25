@@ -22,8 +22,8 @@ mapping:
 tracking:
   use_pose_utils: true 
   pose_utils:  
-    fundmat_samples: 1000  # 新增：RANSAC采样数  
-    max_error: 1.0         # 新增：最大误差阈值  
+    fundmat_samples: 1000  
+    max_error: 1.0         
     top_k: 1000
     num_pts_miniba_incr: 500  
     min_num_inliers: 30  

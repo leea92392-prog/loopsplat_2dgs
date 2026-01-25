@@ -230,9 +230,11 @@ class GaussianSLAM(object):
         for frame_id in range(len(self.dataset)):
             #前两帧使用真实位姿
             print("Processing frame", frame_id,"/",len(self.dataset))
+            #执行mini——ba进行位姿估计
             if self.tracker.use_pose_utils:
                 estimated_c2w,exposure_ab = self.tracker.track(frame_id, gaussian_model,
                     torch2np(self.estimated_c2ws[torch.tensor([0, frame_id - 2, frame_id - 1])]))
+            #使用原本的光度、深度残差进行位姿估计
             else:
                 if frame_id in [0, 1]:
                     estimated_c2w = self.dataset[frame_id][-2]
@@ -295,6 +297,10 @@ class GaussianSLAM(object):
             #     if len(lc_output) > 0:
             #         submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
             #         self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
+            if frame_id == len(self.dataset) - 1: 
+                self.save_current_submap(gaussian_model)
+                save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
+
             if self.enable_exposure:
                 self.exposures_ab[frame_id] = torch.tensor([exposure_ab[0].item(), exposure_ab[1].item()])
         save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)

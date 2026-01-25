@@ -17,9 +17,19 @@ from torch.func import vmap, jacfwd
 
 
 def project(xyz, R6D_t, f, centre):
+    xyz = xyz.float()  
+    R6D_t = R6D_t.float()  
+    f = f.float()  
+    centre = centre.float()  
     R6D = R6D_t[:6].reshape(3, 2)
     t = R6D_t[6:9]
     R = sixD2mtx(R6D)
+    # print("-" * 30)
+    # print(f"DEBUG Type Check:")
+    # print(f"  R      dtype: {R.dtype}   | device: {R.device}")
+    # print(f"  xyz    dtype: {xyz.dtype} | device: {xyz.device}")
+    # print(f"  t      dtype: {t.dtype}   | device: {t.device}")
+    # print("-" * 30)
     xyz_local = R @ xyz + t
     return pts2px(xyz_local, f, centre)
 

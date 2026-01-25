@@ -96,7 +96,7 @@ def focal2fov(focal, pixels):
 
 def depth2points(uv, depth, f, centre):
     xyz = torch.cat([(uv[..., :2] - centre) / f, torch.ones_like(uv[..., 0:1])], dim=-1)
-    return depth * xyz
+    return (depth * xyz).float()
 
 
 def reproject(uv, depth, f, centre, relR, relt):

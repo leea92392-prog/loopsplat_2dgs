@@ -26,7 +26,7 @@ class PoseInitializer():
         self.triangulator = triangulator
         self.max_pnp_error = max_pnp_error
         self.matcher = matcher
-        self.centre = torch.tensor([(width - 1) / 2, (height - 1) / 2], device='cuda')
+        self.centre = torch.tensor([(width - 1) / 2, (height - 1) / 2], device='cuda').float()
         # self.num_pts_miniba_bootstrap = args.num_pts_miniba_bootstrap
         # self.num_kpts = args.num_kpts
         # self.num_pts_pnpransac = 2 * args.num_pts_miniba_incr
@@ -257,8 +257,12 @@ class PoseInitializer():
     #             keyframe.desc_kpts.matches.pop(index, None)
     #         return None
     @torch.no_grad()    
-    def initialize_from_depth(self, curr_desc_kpts, depth, intrinsics, prev_keyframes):  
+    def initialize_from_depth(self, curr_desc_kpts, depth, intrinsics, cur_frame_id ,prev_keyframes):  
         """直接从深度图和关键帧进行位姿估计，跳过bootstrap"""  
+        if depth.dtype != torch.float32:  
+            depth = depth.float()  
+        if curr_desc_kpts.kpts.dtype != torch.float32:  
+            curr_desc_kpts.kpts = curr_desc_kpts.kpts.float()  
         # 使用深度图生成3D点  
         kpts_long = curr_desc_kpts.kpts.long()  
         kpts_int = torch.stack([  
@@ -273,15 +277,14 @@ class PoseInitializer():
         matched_uvs = []  
         confs = []  
           
-        for keyframe in prev_keyframes[-2:]:  # 使用最近3个关键帧  
+        for keyframe in prev_keyframes[-3:]:  # 使用最近3个关键帧  
             matches = self.matcher(curr_desc_kpts, keyframe['desc_kpts'],   
-                                 remove_outliers=True, update_kpts_flag="all")  
-              
+                                 remove_outliers=True, update_kpts_flag="all", kID=cur_frame_id, kID_other=keyframe['frame_id'])  
+            print(f"Frame {cur_frame_id} matched with Keyframe {keyframe['frame_id']}: {len(matches.kpts)} inliers.")
             if len(matches.kpts) > self.min_num_inliers:  
                 matched_xyz.append(keyframe['pts3d'][matches.idx_other])  
                 matched_uvs.append(matches.kpts)  
                 confs.append(keyframe['conf'][matches.idx_other])  
-          
         if not matched_xyz:  
             return None  
               
@@ -290,20 +293,28 @@ class PoseInitializer():
         uvs = torch.cat(matched_uvs, dim=0)  
         confs = torch.cat(confs, dim=0)  
           
-        # 使用第一个关键帧的位姿作为初始化  
+        # 使用上关键帧的位姿作为初始化  
         init_pose = prev_keyframes[-1]['pose']  
-        Rs6D_init = torch.from_numpy(init_pose[:3, :2]).cuda()  
-        ts_init = torch.from_numpy(init_pose[:3, 3]).cuda()  
+        Rs6D_init = torch.from_numpy(init_pose[:3, :2]).cuda().float()  
+        ts_init = torch.from_numpy(init_pose[:3, 3]).cuda().float()  
           
         Rt, inliers = self.PnPRANSAC(uvs, xyz, intrinsics[0,0], self.centre, Rs6D_init, ts_init, confs)  
-          
+        print("PnP RANSAC inliers: ", len(inliers))
         if len(inliers) < self.min_num_inliers:  
             return None  
               
         # MiniBA细化  
         xyz_inliers = xyz[inliers]  
         uvs_inliers = uvs[inliers]  
-          
+        if len(xyz_inliers) == 0 or len(uvs_inliers) == 0:  
+            print("Warning: Empty inliers after PnP RANSAC")  
+            return None  
+  
+        if len(xyz_inliers) != len(uvs_inliers):  
+            print(f"Warning: Mismatched tensor lengths: xyz={len(xyz_inliers)}, uvs={len(uvs_inliers)}")  
+            min_len = min(len(xyz_inliers), len(uvs_inliers))  
+            xyz_inliers = xyz_inliers[:min_len]  
+            uvs_inliers = uvs_inliers[:min_len]    
         Rs6D, ts, _, _, r, r_init, mask = self.miniBA_incr(  
             Rs6D_init[None], ts_init[None], intrinsics[0,0],   
             xyz_inliers[:self.num_pts_miniba_incr], self.centre, uvs_inliers.view(-1))  

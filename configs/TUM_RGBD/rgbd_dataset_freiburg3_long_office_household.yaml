@@ -8,7 +8,7 @@ data:
   input_path: /home/lee/A-LOAM-Container/data/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household/
   output_path: output/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final_Noloop_record/
   scene_name: rgbd_dataset_freiburg3_long_office_household
-cam:  #intrinsic is different per scene in TUM
+cam: 
   H: 480 
   W: 640 
   fx: 517.3

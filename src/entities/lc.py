@@ -9,6 +9,7 @@ from tqdm import tqdm
 from PIL import Image
 from pathlib import Path
 import matplotlib.pyplot as plt
+import json  
 
 from src.entities.logger import Logger
 from src.entities.datasets import BaseDataset
@@ -23,6 +24,18 @@ from src.gsr.pcr import (preprocess_point_cloud, execute_global_registration)
 from src.utils.utils import np2torch, torch2np
 from src.utils.graphics_utils import getProjectionMatrix2, focal2fov
 from src.utils.eval_utils import eval_ate
+from src.utils.io_utils import save_dict_to_json
+
+class NumpyEncoder(json.JSONEncoder):  
+    """自定义JSON编码器，用于处理NumPy数组和数值类型"""  
+    def default(self, obj):  
+        if isinstance(obj, np.ndarray):  
+            return obj.tolist()  # 将NumPy数组转换为Python列表  
+        if isinstance(obj, (np.float32, np.float64)):  
+            return float(obj)  # 将NumPy浮点数转换为Python float  
+        if isinstance(obj, (np.int32, np.int64)):  
+            return int(obj)  # 将NumPy整数转换为Python int  
+        return json.JSONEncoder.default(self, obj)
 
 class PGO_Edge:
     def __init__(self, src_id, tgt_id, overlap=0.):
@@ -74,7 +87,8 @@ class Loop_closure(object):
         self.fovx = focal2fov(self.config["cam"]["fx"], self.config["cam"]["W"])
         self.fovy = focal2fov(self.config["cam"]["fy"], self.config["cam"]["H"])
         self.min_interval = self.config['lc']['min_interval']
-        
+        #保存回环信息
+        self.loop_closure_records = []  
         # TODO: rename below
         self.config["Training"] = {"edge_threshold": 4.0}
         self.config["Dataset"] = {"type": "replica"}
@@ -294,7 +308,14 @@ class Loop_closure(object):
                 elif target_id in matches: # loop closure edge
                     reg_dict = self.pairwise_registration(source_submap, target_submap, "gs_reg")
                     if not reg_dict['successful']: continue
-                    
+                    loop_record = {  
+                        'source_submap_id': source_id,  
+                        'target_submap_id': target_id,  
+                        'source_keyframes': source_submap['kf_ids'],  
+                        'target_keyframes': target_submap['kf_ids'],  
+                        'transformation': reg_dict['transformation'],  
+                    }  
+                    self.loop_closure_records.append(loop_record)
                     if np.isnan(reg_dict["transformation"][:3,3]).any() or reg_dict["transformation"][3,3]!=1.0: continue
                     
                     # analyse 
@@ -373,7 +394,20 @@ class Loop_closure(object):
         
         else:
             print("No valid loop edges or new loop edges. Skipping ...")
+        if len(correction_list) > 0:  
+            loop_info = {  
+                'pgo_count': self.pgo_count,  
+                'current_submap_id': self.submap_id,  
+                'loop_edges': [(edge[0], edge[1]) for edge in loop_edges],  
+                'corrections': correction_list,  
+                'loop_closure_records': self.loop_closure_records  
+            }  
             
+            output_dir = Path(self.config["data"]["output_path"]) / "loop_closures"  
+            output_dir.mkdir(exist_ok=True, parents=True)  
+            
+            with open(output_dir / f"loop_closure_info_{self.pgo_count}.json", "w") as f:  
+                json.dump(loop_info, f, cls=NumpyEncoder, indent=4)  
         return correction_list
     
     def analyse_pgo(self, odometry_edges, loop_edges, pose_graph):

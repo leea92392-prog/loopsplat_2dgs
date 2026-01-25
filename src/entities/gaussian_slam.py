@@ -253,11 +253,11 @@ class GaussianSLAM(object):
                 self.loop_closer.update_submaps_info(self.keyframes_info)
                 
                 # # apply loop closure
-                lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
+                # lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
                 
-                if len(lc_output) > 0:
-                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
-                    self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
+                # if len(lc_output) > 0:
+                #     submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
+                #     self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
                 
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
                 
@@ -283,17 +283,16 @@ class GaussianSLAM(object):
                 if self.enable_exposure:
                     self.keyframes_info[frame_id]["exposure_a"] = exposure_ab[0].item()
                     self.keyframes_info[frame_id]["exposure_b"] = exposure_ab[1].item()
-            
             # if frame_id == len(self.dataset) - 1 and self.config['lc']['final']:
+            #     self.save_current_submap(gaussian_model)
             #     print("\n Final loop closure ...")
             #     self.loop_closer.update_submaps_info(self.keyframes_info)
-            #     lc_output = self.loop_closer.loop_closure(self.estimated_c2ws, final=True)
+            #     lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
             #     if len(lc_output) > 0:
             #         submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
             #         self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
             if self.enable_exposure:
                 self.exposures_ab[frame_id] = torch.tensor([exposure_ab[0].item(), exposure_ab[1].item()])
-        self.save_current_submap(gaussian_model)
         save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
         if self.enable_exposure:
             save_dict_to_ckpt(self.exposures_ab, "exposures_ab.ckpt", directory=self.output_path)

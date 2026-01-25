@@ -525,17 +525,17 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        # try:
-        #     self.run_trajectory_eval()
-        # except Exception:
-        #     print("Could not run trajectory eval")
-        #     traceback.print_exc()
+        try:
+            self.run_trajectory_eval()
+        except Exception:
+            print("Could not run trajectory eval")
+            traceback.print_exc()
 
-        # try:
-        #     self.run_rendering_eval()
-        # except Exception:
-        #     print("Could not run rendering eval")
-        #     traceback.print_exc()
+        try:
+            self.run_rendering_eval()
+        except Exception:
+            print("Could not run rendering eval")
+            traceback.print_exc()
 
         try:
             self.run_reconstruction_eval()

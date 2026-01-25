@@ -11,7 +11,7 @@
 
 import torch
 
-from poses.ransac import EstimatorType, RANSACEstimator
+from src.pose_utils.ransac import EstimatorType, RANSACEstimator
 
 
 class Matches:

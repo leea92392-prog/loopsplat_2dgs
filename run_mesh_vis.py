@@ -13,12 +13,13 @@ def get_args():
 if __name__ == "__main__":
     args = get_args()
     #args.checkpoint_path = "output/Replica/office2"
-    #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg1_desk_final_0"
+    args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg1_desk_final_0"
     #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
     #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg2_xyz_final"
     #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_output/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg1_desk_final"
-    args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_output/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
+    #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_outout/2dgs-slam/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final"
     #args.checkpoint_path = "/media/lee/Data/2DGS_SLAM_outout/2DGS_SLAM_outout/2dgs-slam/Replica/office0"
+    #args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final_loop_record"
 
     if args.config_path == "":
         args.config_path = Path(args.checkpoint_path) / "config.yaml"

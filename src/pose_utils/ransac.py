@@ -13,8 +13,8 @@ import torch
 import cupy
 import math
 from enum import Enum
-from poses.mini_ba import MiniBA
-from utils import pts2px, sixD2mtx
+from src.pose_utils.mini_ba import MiniBA
+from src.pose_utils.utils import pts2px, sixD2mtx
 
 
 class EstimatorType(Enum):
@@ -38,11 +38,11 @@ class RANSACEstimator:
         self.type = type
 
         # Read the CUDA source code and set the include directory to poses/
-        with open("poses/ransac.cu", "r") as f:
+        with open("src/pose_utils/ransac.cu", "r") as f:
             cuda_source = f.read()
         self.module = cupy.RawModule(
             code=cuda_source,
-            options=("--std=c++14", "-Iposes"),
+            options=("--std=c++14", "-Isrc/pose_utils"),
         )
 
         # Set the functions and number of points required for each estimator

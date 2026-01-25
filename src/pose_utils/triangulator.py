@@ -12,8 +12,8 @@
 import torch
 import torch.nn as nn
 
-from poses.feature_detector import DescribedKeypoints
-from utils import depth2points, pts2px
+from src.pose_utils.feature_detector import DescribedKeypoints
+from src.pose_utils.utils import depth2points, pts2px
 
 def matches_to_points(uv, uv_matched, R, t, f, centre):
     p2 = t[None]  # [1, 3]

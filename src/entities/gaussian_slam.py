@@ -230,14 +230,18 @@ class GaussianSLAM(object):
         for frame_id in range(len(self.dataset)):
             #前两帧使用真实位姿
             print("Processing frame", frame_id,"/",len(self.dataset))
-            if frame_id in [0, 1]:
-                estimated_c2w = self.dataset[frame_id][-2]
-                exposure_ab = torch.nn.Parameter(torch.tensor(
-                    0.0, device="cuda")), torch.nn.Parameter(torch.tensor(0.0, device="cuda"))
-            else:
-                estimated_c2w, exposure_ab = self.tracker.track(
-                    frame_id, gaussian_model,
+            if self.tracker.use_pose_utils:
+                estimated_c2w,exposure_ab = self.tracker.track(frame_id, gaussian_model,
                     torch2np(self.estimated_c2ws[torch.tensor([0, frame_id - 2, frame_id - 1])]))
+            else:
+                if frame_id in [0, 1]:
+                    estimated_c2w = self.dataset[frame_id][-2]
+                    exposure_ab = torch.nn.Parameter(torch.tensor(
+                        0.0, device="cuda")), torch.nn.Parameter(torch.tensor(0.0, device="cuda"))
+                else:
+                    estimated_c2w, exposure_ab = self.tracker.track(
+                        frame_id, gaussian_model,
+                        torch2np(self.estimated_c2ws[torch.tensor([0, frame_id - 2, frame_id - 1])]))
             exposure_ab = exposure_ab if self.enable_exposure else None
             self.estimated_c2ws[frame_id] = np2torch(estimated_c2w)
 

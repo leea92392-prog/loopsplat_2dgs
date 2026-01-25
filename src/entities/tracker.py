@@ -21,7 +21,7 @@ from src.utils.pose_utils import euler_matrix
 from src.utils.utils import (get_render_settings, np2torch,
                              render_gaussian_model, torch2np)
 from src.utils.vis_utils import *
-
+from src.entities.pose_utils_adapter import PoseUtilsAdapter  
 class Tracker(object):
     def __init__(self, config: dict, dataset: BaseDataset, logger: Logger) -> None:
         """ Initializes the Tracker with a given configuration, dataset, and logger.
@@ -49,10 +49,12 @@ class Tracker(object):
         self.init_err_ratio = self.config["init_err_ratio"]
         self.enable_exposure = self.config["enable_exposure"]
         self.odometer = VisualOdometer(self.dataset.intrinsics, self.config["odometer_method"])
+        self.use_pose_utils = self.config.get("use_pose_utils", False)
         if self.use_imu:
             self.tstamps = self.dataset.tstamps
             self.tf = {}
             self.tf["c2i"] = self.dataset.get_c2i_tf()
+        self.pose_utils_adapter = PoseUtilsAdapter(config["pose_utils"], dataset)  
 
 
 
@@ -315,10 +317,16 @@ class Tracker(object):
             The updated camera-to-world transformation matrix for the current frame.
         """
         _, image, depth, gt_c2w,imu_meas = self.dataset[frame_id]
+        intrinsics = self.dataset.intrinsics  
+        if self.use_pose_utils:  
+            # 使用pose_utils进行位姿估计  
+            estimated_c2w = self.pose_utils_adapter.estimate_pose(  
+                frame_id, image, depth, intrinsics  
+            )  
+            return estimated_c2w, None  
         if (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]
             self.odometer.update_last_rgbd(last_image, last_depth)
-
         if self.odometry_type == "gt":
             return gt_c2w, None
         elif self.odometry_type == "const_speed":

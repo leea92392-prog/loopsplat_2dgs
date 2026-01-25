@@ -7,7 +7,7 @@ seed: 0
 mapping:
   new_submap_every: 50 #50
   map_every: 1
-  iterations: 60 #100
+  iterations: 100 #100
   new_submap_iterations: 150 #200
   new_submap_points_num: 180000 
   new_submap_gradient_points_num: 50000 
@@ -20,6 +20,15 @@ mapping:
   use_normal_reg: true
   use_dist_reg: true
 tracking:
+  use_pose_utils: true 
+  pose_utils:  
+    fundmat_samples: 1000  # 新增：RANSAC采样数  
+    max_error: 1.0         # 新增：最大误差阈值  
+    top_k: 1000
+    num_pts_miniba_incr: 500  
+    min_num_inliers: 30  
+    pnpransac_samples: 1000  
+    iters_miniba_incr: 10  
   use_imu: false
   gt_camera: False
   w_color_loss: 0.6
@@ -40,7 +49,7 @@ cam:
   crop_edge: 0
   depth_scale: 5000.0
 lc: 
-  min_similarity: 0.5
+  min_similarity: 0.45
   pgo_edge_prune_thres: 0.25
   voxel_size: 0.02
   pgo_max_iterations: 500

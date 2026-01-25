@@ -12,11 +12,11 @@
 import torch
 import math
 
-from poses.feature_detector import DescribedKeypoints
-from poses.mini_ba import MiniBA
-from utils import fov2focal, depth2points, sixD2mtx
-from scene.keyframe import Keyframe
-from poses.ransac import RANSACEstimator, EstimatorType
+from src.pose_utils.feature_detector import DescribedKeypoints
+from src.pose_utils.mini_ba import MiniBA
+from src.pose_utils.utils import fov2focal, depth2points, sixD2mtx
+# from scene.keyframe import Keyframe
+from src.pose_utils.ransac import RANSACEstimator, EstimatorType
 
 class PoseInitializer():
     """Fast pose initializer using MiniBA and the previous frames."""
@@ -26,35 +26,38 @@ class PoseInitializer():
         self.triangulator = triangulator
         self.max_pnp_error = max_pnp_error
         self.matcher = matcher
-
         self.centre = torch.tensor([(width - 1) / 2, (height - 1) / 2], device='cuda')
-        self.num_pts_miniba_bootstrap = args.num_pts_miniba_bootstrap
-        self.num_kpts = args.num_kpts
-
-        self.num_pts_pnpransac = 2 * args.num_pts_miniba_incr
-        self.num_pts_miniba_incr = args.num_pts_miniba_incr
-        self.min_num_inliers = args.min_num_inliers
-
-        # Initialize the focal length
-        if args.init_focal > 0:
-            self.f_init = args.init_focal
-        elif args.init_fov > 0:
-            self.f_init = fov2focal(args.init_fov * math.pi / 180, width)
-        else:
-            self.f_init = 0.7 * width
-
-        # Initialize MiniBA models
-        self.miniba_bootstrap = MiniBA(
-            1, args.num_keyframes_miniba_bootstrap, 0, args.num_pts_miniba_bootstrap,  not args.fix_focal, True,
-            make_cuda_graph=True, iters=args.iters_miniba_bootstrap)
-        self.miniba_rebooting = MiniBA(
-            1, args.num_keyframes_miniba_bootstrap, 0, args.num_pts_miniba_bootstrap,  False, True,
-            make_cuda_graph=True, iters=args.iters_miniba_bootstrap)
-        self.miniBA_incr = MiniBA(
-            1, 1, 0, args.num_pts_miniba_incr, optimize_focal=False, optimize_3Dpts=False,
-            make_cuda_graph=True, iters=args.iters_miniba_incr)
-        
-        self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)
+        # self.num_pts_miniba_bootstrap = args.num_pts_miniba_bootstrap
+        # self.num_kpts = args.num_kpts
+        # self.num_pts_pnpransac = 2 * args.num_pts_miniba_incr
+        # self.num_pts_miniba_incr = args.num_pts_miniba_incr
+        # self.min_num_inliers = args.min_num_inliers
+        # # Initialize the focal length
+        # if args.init_focal > 0:
+        #     self.f_init = args.init_focal
+        # elif args.init_fov > 0:
+        #     self.f_init = fov2focal(args.init_fov * math.pi / 180, width)
+        # else:
+        #     self.f_init = 0.7 * width
+        # # Initialize MiniBA models
+        # self.miniba_bootstrap = MiniBA(
+        #     1, args.num_keyframes_miniba_bootstrap, 0, args.num_pts_miniba_bootstrap,  not args.fix_focal, True,
+        #     make_cuda_graph=True, iters=args.iters_miniba_bootstrap)
+        # self.miniba_rebooting = MiniBA(
+        #     1, args.num_keyframes_miniba_bootstrap, 0, args.num_pts_miniba_bootstrap,  False, True,
+        #     make_cuda_graph=True, iters=args.iters_miniba_bootstrap)
+        # self.miniBA_incr = MiniBA(
+        #     1, 1, 0, args.num_pts_miniba_incr, optimize_focal=False, optimize_3Dpts=False,
+        #     make_cuda_graph=True, iters=args.iters_miniba_incr)
+        # self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)
+        # 直接使用深度图的焦距，不需要bootstrap  
+        self.num_pts_miniba_incr = args.num_pts_miniba_incr  
+        self.min_num_inliers = args.min_num_inliers  
+        # 只初始化增量式MiniBA  
+        self.miniBA_incr = MiniBA(  
+            1, 1, 0, args.num_pts_miniba_incr, optimize_focal=False, optimize_3Dpts=False,  
+            make_cuda_graph=True, iters=args.iters_miniba_incr)  
+        self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)  
 
     def build_problem(self,
                       desc_kpts_list: list[DescribedKeypoints],
@@ -133,122 +136,174 @@ class PoseInitializer():
         xyz_indices[mask, :] = -1
         return uvs, xyz_indices
 
-    @torch.no_grad()
-    def initialize_bootstrap(self, desc_kpts_list: list[DescribedKeypoints], rebooting=False):
-        """
-        Estimate focal and initialize the poses of the frames corresponding to desc_kpts_list. 
-        """
-        n_cams = len(desc_kpts_list)
-        npts = self.num_pts_miniba_bootstrap
+    # @torch.no_grad()
+    # def initialize_bootstrap(self, desc_kpts_list: list[DescribedKeypoints], rebooting=False):
+    #     """
+    #     Estimate focal and initialize the poses of the frames corresponding to desc_kpts_list. 
+    #     """
+    #     n_cams = len(desc_kpts_list)
+    #     npts = self.num_pts_miniba_bootstrap
 
-        ## Exhaustive matching
-        for i in range(n_cams):
-            for j in range(i + 1, n_cams):
-                _ = self.matcher(desc_kpts_list[i], desc_kpts_list[j], remove_outliers=True, update_kpts_flag="inliers", kID=i, kID_other=j)
+    #     ## Exhaustive matching
+    #     for i in range(n_cams):
+    #         for j in range(i + 1, n_cams):
+    #             _ = self.matcher(desc_kpts_list[i], desc_kpts_list[j], remove_outliers=True, update_kpts_flag="inliers", kID=i, kID_other=j)
         
-        ## Build the problem by organizing matches
-        uvs, xyz_indices = self.build_problem(desc_kpts_list, npts, n_cams, n_cams, 2, list(range(n_cams)))
+    #     ## Build the problem by organizing matches
+    #     uvs, xyz_indices = self.build_problem(desc_kpts_list, npts, n_cams, n_cams, 2, list(range(n_cams)))
 
-        ## Initialize for miniBA (poses at identity, 3D points with rand depth)
-        f_init = (torch.tensor([self.f_init], device="cuda"))
-        Rs6D_init = torch.eye(3, 2, device="cuda")[None].repeat(n_cams, 1, 1)
-        ts_init = torch.zeros(n_cams, 3, device="cuda")
+    #     ## Initialize for miniBA (poses at identity, 3D points with rand depth)
+    #     f_init = (torch.tensor([self.f_init], device="cuda"))
+    #     Rs6D_init = torch.eye(3, 2, device="cuda")[None].repeat(n_cams, 1, 1)
+    #     ts_init = torch.zeros(n_cams, 3, device="cuda")
 
-        xyz_init = torch.zeros(npts, 3, device="cuda")
-        for k in range(n_cams):
-            mask = (uvs[:, k, :] >= 0).all(dim=-1)
-            xyz_init[mask] += depth2points(uvs[mask, k, :], 1, f_init, self.centre)
-        xyz_init /= xyz_init[..., -1:].clamp_min(1)
-        xyz_init[..., -1] = 1
-        xyz_init *= 1 + torch.randn_like(xyz_init[:, :1]).abs()
+    #     xyz_init = torch.zeros(npts, 3, device="cuda")
+    #     for k in range(n_cams):
+    #         mask = (uvs[:, k, :] >= 0).all(dim=-1)
+    #         xyz_init[mask] += depth2points(uvs[mask, k, :], 1, f_init, self.centre)
+    #     xyz_init /= xyz_init[..., -1:].clamp_min(1)
+    #     xyz_init[..., -1] = 1
+    #     xyz_init *= 1 + torch.randn_like(xyz_init[:, :1]).abs()
 
-        ## Run miniBA, estimating 3D points, camera focal and poses
-        if rebooting:
-            Rs6D, ts, f, xyz, r, r_init, mask = self.miniba_rebooting(Rs6D_init, ts_init, self.f, xyz_init, self.centre, uvs.view(-1))
-        else:
-            Rs6D, ts, f, xyz, r, r_init, mask = self.miniba_bootstrap(Rs6D_init, ts_init, f_init, xyz_init, self.centre, uvs.view(-1))
-        final_residual = (r * mask).abs().sum()/mask.sum()
+    #     ## Run miniBA, estimating 3D points, camera focal and poses
+    #     if rebooting:
+    #         Rs6D, ts, f, xyz, r, r_init, mask = self.miniba_rebooting(Rs6D_init, ts_init, self.f, xyz_init, self.centre, uvs.view(-1))
+    #     else:
+    #         Rs6D, ts, f, xyz, r, r_init, mask = self.miniba_bootstrap(Rs6D_init, ts_init, f_init, xyz_init, self.centre, uvs.view(-1))
+    #     final_residual = (r * mask).abs().sum()/mask.sum()
 
-        self.f = f
-        self.intrinsics = torch.cat([f, self.centre], dim=0)
+    #     self.f = f
+    #     self.intrinsics = torch.cat([f, self.centre], dim=0)
 
-        ## Scale to 0.1 average translation
-        rel_ts = ts[:-1] - ts[1:]
-        scale = 0.1 / rel_ts.norm(dim=-1).mean()
-        ts *= scale
-        xyz = scale * xyz.clone()
-        Rts = torch.eye(4, device="cuda")[None].repeat(n_cams, 1, 1)
-        Rts[:, :3, :3] = sixD2mtx(Rs6D)
-        Rts[:, :3, 3] = ts
+    #     ## Scale to 0.1 average translation
+    #     rel_ts = ts[:-1] - ts[1:]
+    #     scale = 0.1 / rel_ts.norm(dim=-1).mean()
+    #     ts *= scale
+    #     xyz = scale * xyz.clone()
+    #     Rts = torch.eye(4, device="cuda")[None].repeat(n_cams, 1, 1)
+    #     Rts[:, :3, :3] = sixD2mtx(Rs6D)
+    #     Rts[:, :3, 3] = ts
 
-        return Rts, f, final_residual
+    #     return Rts, f, final_residual
 
-    @torch.no_grad()
-    def initialize_incremental(self, keyframes: list[Keyframe], curr_desc_kpts: DescribedKeypoints, index: int, is_test: bool, curr_img):
-        """
-        Initialize the pose of the frame given by curr_desc_kpts and index using the previously registered keyframes.
-        """
+    # @torch.no_grad()
+    # def initialize_incremental(self, keyframes: list[Keyframe], curr_desc_kpts: DescribedKeypoints, index: int, is_test: bool, curr_img):
+    #     """
+    #     Initialize the pose of the frame given by curr_desc_kpts and index using the previously registered keyframes.
+    #     """
         
-        # Match the current frame with previous keyframes
-        xyz = []
-        uvs = []
-        confs = []
-        match_indices = []
-        for keyframe in keyframes:
-            matches = self.matcher(curr_desc_kpts, keyframe.desc_kpts, remove_outliers=True, update_kpts_flag="all", kID=index, kID_other=keyframe.index)
+    #     # Match the current frame with previous keyframes
+    #     xyz = []
+    #     uvs = []
+    #     confs = []
+    #     match_indices = []
+    #     for keyframe in keyframes:
+    #         matches = self.matcher(curr_desc_kpts, keyframe.desc_kpts, remove_outliers=True, update_kpts_flag="all", kID=index, kID_other=keyframe.index)
 
-            mask = keyframe.desc_kpts.has_pt3d[matches.idx_other]
-            xyz.append(keyframe.desc_kpts.pts3d[matches.idx_other[mask]])
-            uvs.append(matches.kpts[mask])
-            confs.append(keyframe.desc_kpts.pts_conf[matches.idx_other[mask]])
-            match_indices.append(matches.idx[mask])
+    #         mask = keyframe.desc_kpts.has_pt3d[matches.idx_other]
+    #         xyz.append(keyframe.desc_kpts.pts3d[matches.idx_other[mask]])
+    #         uvs.append(matches.kpts[mask])
+    #         confs.append(keyframe.desc_kpts.pts_conf[matches.idx_other[mask]])
+    #         match_indices.append(matches.idx[mask])
 
-        xyz = torch.cat(xyz, dim=0)
-        uvs = torch.cat(uvs, dim=0)
-        confs = torch.cat(confs, dim=0)
-        match_indices = torch.cat(match_indices, dim=0)
+    #     xyz = torch.cat(xyz, dim=0)
+    #     uvs = torch.cat(uvs, dim=0)
+    #     confs = torch.cat(confs, dim=0)
+    #     match_indices = torch.cat(match_indices, dim=0)
 
-        # Subsample the points if there are too many
-        if len(xyz) > self.num_pts_pnpransac:
-            selected_indices = torch.multinomial(confs, self.num_pts_miniba_incr, replacement=False)
-            xyz = xyz[selected_indices]
-            uvs = uvs[selected_indices]
-            confs = confs[selected_indices]
-            match_indices = match_indices[selected_indices]
+    #     # Subsample the points if there are too many
+    #     if len(xyz) > self.num_pts_pnpransac:
+    #         selected_indices = torch.multinomial(confs, self.num_pts_miniba_incr, replacement=False)
+    #         xyz = xyz[selected_indices]
+    #         uvs = uvs[selected_indices]
+    #         confs = confs[selected_indices]
+    #         match_indices = match_indices[selected_indices]
 
-        # Estimate an initial camera pose and inliers using PnP RANSAC
-        Rs6D_init = keyframes[0].rW2C
-        ts_init = keyframes[0].tW2C
-        Rt, inliers = self.PnPRANSAC(uvs, xyz, self.f, self.centre, Rs6D_init, ts_init, confs)
+    #     # Estimate an initial camera pose and inliers using PnP RANSAC
+    #     Rs6D_init = keyframes[0].rW2C
+    #     ts_init = keyframes[0].tW2C
+    #     Rt, inliers = self.PnPRANSAC(uvs, xyz, self.f, self.centre, Rs6D_init, ts_init, confs)
 
-        xyz = xyz[inliers]
-        uvs = uvs[inliers]
-        confs = confs[inliers]
-        match_indices = match_indices[inliers]
+    #     xyz = xyz[inliers]
+    #     uvs = uvs[inliers]
+    #     confs = confs[inliers]
+    #     match_indices = match_indices[inliers]
 
-        # Subsample the points if there are too many
-        if len(xyz) >= self.num_pts_miniba_incr:
-            selected_indices = torch.topk(torch.rand_like(xyz[..., 0]), self.num_pts_miniba_incr, dim=0, largest=False)[1]
-            xyz_ba = xyz[selected_indices]
-            uvs_ba = uvs[selected_indices]
-        elif len(xyz) < self.num_pts_miniba_incr:
-            xyz_ba = torch.cat([xyz, torch.zeros(self.num_pts_miniba_incr - len(xyz), 3, device="cuda")], dim=0)
-            uvs_ba = torch.cat([uvs, -torch.ones(self.num_pts_miniba_incr - len(uvs), 2, device="cuda")], dim=0)
+    #     # Subsample the points if there are too many
+    #     if len(xyz) >= self.num_pts_miniba_incr:
+    #         selected_indices = torch.topk(torch.rand_like(xyz[..., 0]), self.num_pts_miniba_incr, dim=0, largest=False)[1]
+    #         xyz_ba = xyz[selected_indices]
+    #         uvs_ba = uvs[selected_indices]
+    #     elif len(xyz) < self.num_pts_miniba_incr:
+    #         xyz_ba = torch.cat([xyz, torch.zeros(self.num_pts_miniba_incr - len(xyz), 3, device="cuda")], dim=0)
+    #         uvs_ba = torch.cat([uvs, -torch.ones(self.num_pts_miniba_incr - len(uvs), 2, device="cuda")], dim=0)
 
-        # Run the initialization
-        Rs6D, ts = Rt[:3, :2][None], Rt[:3, 3][None]
-        Rs6D, ts, _, _, r, r_init, mask = self.miniBA_incr(Rs6D, ts, self.f, xyz_ba, self.centre, uvs_ba.view(-1))
-        Rt = torch.eye(4, device="cuda")
-        Rt[:3, :3] = sixD2mtx(Rs6D)[0]
-        Rt[:3, 3] = ts[0]
+    #     # Run the initialization
+    #     Rs6D, ts = Rt[:3, :2][None], Rt[:3, 3][None]
+    #     Rs6D, ts, _, _, r, r_init, mask = self.miniBA_incr(Rs6D, ts, self.f, xyz_ba, self.centre, uvs_ba.view(-1))
+    #     Rt = torch.eye(4, device="cuda")
+    #     Rt[:3, :3] = sixD2mtx(Rs6D)[0]
+    #     Rt[:3, 3] = ts[0]
 
-        # Check if we have sufficiently many inliers
-        if is_test or mask.sum() > self.min_num_inliers:
-            # Return the pose of the current frame
-            return Rt
-        else:
-            print("Too few inliers for pose initialization")
-            # Remove matches as we prevent the current frame from being registered
-            for keyframe in keyframes:
-                keyframe.desc_kpts.matches.pop(index, None)
-            return None
+    #     # Check if we have sufficiently many inliers
+    #     if is_test or mask.sum() > self.min_num_inliers:
+    #         # Return the pose of the current frame
+    #         return Rt
+    #     else:
+    #         print("Too few inliers for pose initialization")
+    #         # Remove matches as we prevent the current frame from being registered
+    #         for keyframe in keyframes:
+    #             keyframe.desc_kpts.matches.pop(index, None)
+    #         return None
+    @torch.no_grad()    
+    def initialize_from_depth(self, curr_desc_kpts, depth, intrinsics, prev_keyframes):  
+        """直接从深度图和关键帧进行位姿估计，跳过bootstrap"""  
+        # 使用深度图生成3D点  
+        xyz = depth2points(curr_desc_kpts.kpts, depth, intrinsics[0,0], self.centre)  
+          
+        # 与之前的关键帧匹配  
+        matched_xyz = []  
+        matched_uvs = []  
+        confs = []  
+          
+        for keyframe in prev_keyframes[-3:]:  # 使用最近3个关键帧  
+            matches = self.matcher(curr_desc_kpts, keyframe['desc_kpts'],   
+                                 remove_outliers=True, update_kpts_flag="all")  
+              
+            if len(matches.kpts) > self.min_num_inliers:  
+                matched_xyz.append(keyframe['pts3d'][matches.idx_other])  
+                matched_uvs.append(matches.kpts)  
+                confs.append(keyframe['conf'][matches.idx_other])  
+          
+        if not matched_xyz:  
+            return None  
+              
+        # PnP RANSAC + MiniBA优化  
+        xyz = torch.cat(matched_xyz, dim=0)  
+        uvs = torch.cat(matched_uvs, dim=0)  
+        confs = torch.cat(confs, dim=0)  
+          
+        # 使用第一个关键帧的位姿作为初始化  
+        init_pose = prev_keyframes[-1]['pose']  
+        Rs6D_init = torch.from_numpy(init_pose[:3, :2]).cuda()  
+        ts_init = torch.from_numpy(init_pose[:3, 3]).cuda()  
+          
+        Rt, inliers = self.PnPRANSAC(uvs, xyz, intrinsics[0,0], self.centre, Rs6D_init, ts_init, confs)  
+          
+        if len(inliers) < self.min_num_inliers:  
+            return None  
+              
+        # MiniBA细化  
+        xyz_inliers = xyz[inliers]  
+        uvs_inliers = uvs[inliers]  
+          
+        Rs6D, ts, _, _, r, r_init, mask = self.miniBA_incr(  
+            Rs6D_init[None], ts_init[None], intrinsics[0,0],   
+            xyz_inliers[:self.num_pts_miniba_incr], self.centre, uvs_inliers.view(-1))  
+          
+        # 构建最终位姿  
+        final_pose = torch.eye(4, device="cuda")  
+        final_pose[:3, :3] = sixD2mtx(Rs6D)[0]  
+        final_pose[:3, 3] = ts[0]  
+          
+        return final_pose.cpu().numpy()

@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from utils import mtx2sixD, pts2px, sixD2mtx
+from src.pose_utils.utils import mtx2sixD, pts2px, sixD2mtx
 
 import torch
 import torch.nn as nn
@@ -325,11 +325,11 @@ class MiniBA:
 
         # Initialize dummy inputs for compilation
         n_cams = n_opt_cams + n_fixed_cams
-        Rs6D_init = torch.randn(batch, n_cams, 3, 2, device="cuda")
-        ts_init = torch.randn(batch, n_cams, 3, device="cuda")
-        f_init = torch.randn(1, device="cuda")
-        xyz_init = torch.randn(batch, npts, 3, device="cuda")
-        centre = torch.randn(2, device="cuda")
+        Rs6D_init = torch.randn(batch, n_cams, 3, 2, device="cuda", requires_grad=True)  
+        ts_init = torch.randn(batch, n_cams, 3, device="cuda", requires_grad=True)  
+        f_init = torch.randn(1, device="cuda", requires_grad=optimize_focal)  
+        xyz_init = torch.randn(batch, npts, 3, device="cuda", requires_grad=optimize_3Dpts)  
+        centre = torch.randn(2, device="cuda")  
         uv = torch.randn(batch, npts * n_cams * 2, device="cuda")
 
         if make_cuda_graph:

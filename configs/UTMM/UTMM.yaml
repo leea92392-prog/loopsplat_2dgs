@@ -7,7 +7,7 @@ desired_height: 330
 desired_width: 640
 seed: 0
 mapping:
-  new_submap_every: 50
+  new_submap_every: 80
   map_every: 1
   iterations: 80
   new_submap_iterations: 150
@@ -19,6 +19,8 @@ mapping:
   alpha_thre: 0.6
   pruning_thre: 0.5
   submap_using_motion_heuristic: True
+  use_normal_reg: true
+  use_dist_reg: true
 tracking:
   use_imu: false
   gt_camera: False

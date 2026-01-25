@@ -1,13 +1,13 @@
 inherit_from: configs/UTMM/UTMM.yaml
 data:
   input_path: /home/lee/A-LOAM-Container/data/UTMM_Dataset/ego-centric-1
-  output_path: output/UTMM/ego-centric-1_test/
+  output_path: output/UTMM/ego-centric-1_loop/
   scene_name: ego-centric-1
 start_idx: 450
-stride: 2
+stride: 3
 early_stop: 1420
-motion_rot_thre: 50
-motion_trans_thre: 1
+rot_thre: 50
+trans_thre: 1.0
 
 cam:  #intrinsic is different per scene in TUM
   H: 660 

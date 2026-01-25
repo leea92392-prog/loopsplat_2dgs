@@ -1,13 +1,22 @@
 """ This module includes the Logger class, which is responsible for logging for both Mapper and the Tracker """
 from pathlib import Path
 from typing import Union
-
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import wandb
 
-
+# 强制禁用LaTeX渲染  
+matplotlib.rcParams['text.usetex'] = False  
+matplotlib.rcParams['font.family'] = 'DejaVu Sans'  
+matplotlib.rcParams['mathtext.fontset'] = 'dejavusans'  
+  
+# 确保配置生效  
+plt.rcParams.update({  
+    'text.usetex': False,  
+    'font.family': 'DejaVu Sans'  
+})
 class Logger(object):
 
     def __init__(self, output_path: Union[Path, str], use_wandb=False) -> None:
@@ -145,7 +154,12 @@ class Logger(object):
 
         for ax in axs.flatten():
             ax.axis('off')
-        fig.tight_layout()
+        try:
+            fig.tight_layout()
+        except (FileNotFoundError, OSError) as e:  
+            print(f"Warning: Font metrics missing, skipping tight_layout: {e}")  
+            # 可选：手动调整子图参数作为替代  
+            fig.subplots_adjust(left=0.1, right=0.95, top=0.95, bottom=0.05)  
         plt.subplots_adjust(top=0.90)  # Adjust top margin
         fig_name = str(self.output_path / "mapping_vis" / f'{frame_id:04d}_{iter:04d}.jpg')
         fig_title = f"Mapper Color/Depth at frame {frame_id:04d} iters {iter:04d}"

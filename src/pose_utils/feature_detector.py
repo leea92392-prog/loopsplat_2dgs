@@ -91,7 +91,9 @@ class Detector():
     @torch.no_grad()
     def __init__(self, top_k, width, height):
         cache_path = f"models/cache/xfeat_{width}_{height}_{top_k}.pt"
-        dummy_img = torch.randn(1, 3, height, width).cuda().to(torch.half)
+        valid_height = max(32, (height // 32) * 32)  
+        valid_width = max(32, (width // 32) * 32)  
+        dummy_img = torch.randn(1, 3, valid_height, valid_width).cuda().to(torch.half)
         if os.path.exists(cache_path):
             extractor = torch.jit.load(cache_path)
         else:

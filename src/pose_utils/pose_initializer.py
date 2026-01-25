@@ -51,12 +51,13 @@ class PoseInitializer():
         #     make_cuda_graph=True, iters=args.iters_miniba_incr)
         # self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)
         # 直接使用深度图的焦距，不需要bootstrap  
+        self.num_kpts = 1000
         self.num_pts_miniba_incr = args.num_pts_miniba_incr  
         self.min_num_inliers = args.min_num_inliers  
         # 只初始化增量式MiniBA  
         self.miniBA_incr = MiniBA(  
             1, 1, 0, args.num_pts_miniba_incr, optimize_focal=False, optimize_3Dpts=False,  
-            make_cuda_graph=True, iters=args.iters_miniba_incr)  
+            make_cuda_graph=False, iters=args.iters_miniba_incr)  
         self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)  
 
     def build_problem(self,
@@ -259,14 +260,20 @@ class PoseInitializer():
     def initialize_from_depth(self, curr_desc_kpts, depth, intrinsics, prev_keyframes):  
         """直接从深度图和关键帧进行位姿估计，跳过bootstrap"""  
         # 使用深度图生成3D点  
-        xyz = depth2points(curr_desc_kpts.kpts, depth, intrinsics[0,0], self.centre)  
+        kpts_long = curr_desc_kpts.kpts.long()  
+        kpts_int = torch.stack([  
+            kpts_long[..., 0].clamp(0, depth.shape[1]-1),  # x坐标  
+            kpts_long[..., 1].clamp(0, depth.shape[0]-1)   # y坐标  
+        ], dim=-1)  
+        depth_at_kpts = depth[kpts_int[..., 1], kpts_int[..., 0]]  
+        xyz = depth2points(curr_desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0], self.centre)  
           
         # 与之前的关键帧匹配  
         matched_xyz = []  
         matched_uvs = []  
         confs = []  
           
-        for keyframe in prev_keyframes[-3:]:  # 使用最近3个关键帧  
+        for keyframe in prev_keyframes[-2:]:  # 使用最近3个关键帧  
             matches = self.matcher(curr_desc_kpts, keyframe['desc_kpts'],   
                                  remove_outliers=True, update_kpts_flag="all")  
               

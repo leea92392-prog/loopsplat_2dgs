@@ -31,8 +31,21 @@ class PoseUtilsAdapter:
     def estimate_pose(self, frame_id, image, depth, intrinsics):  
         """估计当前帧位姿"""  
         # 提取特征  
-        desc_kpts = self.feature_detector(image)  
-          
+        if isinstance(image, np.ndarray):  
+            image = torch.from_numpy(image).cuda()  
+        if isinstance(depth, np.ndarray):  
+            depth = torch.from_numpy(depth).cuda()  
+        if isinstance(intrinsics, np.ndarray):  
+            intrinsics = torch.from_numpy(intrinsics).cuda()
+        # 从 (H, W, C) 转换为 (C, H, W)  
+        image = image.permute(2, 0, 1)  
+        desc_kpts = self.feature_detector(image)
+        kpts_long = desc_kpts.kpts.long()  
+        kpts_int = torch.stack([  
+            kpts_long[..., 0].clamp(0, depth.shape[1]-1),  # x坐标  
+            kpts_long[..., 1].clamp(0, depth.shape[0]-1)   # y坐标  
+        ], dim=-1)       
+        depth_at_kpts = depth[kpts_int[..., 1], kpts_int[..., 0]]  
         if frame_id < 2:  
             # 第一帧使用GT位姿  
             estimated_pose = self.dataset[frame_id][3]
@@ -41,8 +54,8 @@ class PoseUtilsAdapter:
                 'frame_id': frame_id,  
                 'desc_kpts': desc_kpts,  
                 'pose': estimated_pose,  
-                'pts3d': depth2points(desc_kpts.kpts, depth, intrinsics[0,0],   
-                                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2])),  
+               'pts3d': depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0],    
+                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2]).cuda()),
                 'conf': desc_kpts.pts_conf  
             })
             return estimated_pose  
@@ -58,8 +71,8 @@ class PoseUtilsAdapter:
                 'frame_id': frame_id,  
                 'desc_kpts': desc_kpts,  
                 'pose': estimated_pose,  
-                'pts3d': depth2points(desc_kpts.kpts, depth, intrinsics[0,0],   
-                                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2])),  
+                'pts3d': depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0],    
+                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2]).cuda()),  
                 'conf': desc_kpts.pts_conf  
             })  
               

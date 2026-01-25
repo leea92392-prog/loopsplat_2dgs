@@ -63,7 +63,7 @@ class RANSACEstimator:
                 self.m,
                 optimize_focal=False,
                 optimize_3Dpts=False,
-                make_cuda_graph=True,
+                make_cuda_graph=False,
                 outlier_mad_scale=0,
                 iters=20,
             )

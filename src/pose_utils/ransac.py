@@ -63,9 +63,9 @@ class RANSACEstimator:
                 self.m,
                 optimize_focal=False,
                 optimize_3Dpts=False,
-                make_cuda_graph=False,
+                make_cuda_graph=True,
                 outlier_mad_scale=0,
-                iters=20,
+                iters=60,
             )
             self.models = torch.zeros([N, 3, 4], device=torch.device("cuda"))
         else:

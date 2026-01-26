@@ -203,7 +203,7 @@ class Tracker(object):
                 frame_id, image, depth, intrinsics
             )
             print(f"estimated_c2w (frame {frame_id}):\n{estimated_c2w}")
-
+            print(f"gt_c2w (frame {frame_id}):\n{gt_c2w}")
             return estimated_c2w, None  
         if (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]

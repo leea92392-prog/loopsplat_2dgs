@@ -185,7 +185,7 @@ class Detector():
             extractor = torch.jit.load(cache_path)
 
         self.extractor = extractor
-
+        
     @torch.no_grad()
     def __call__(self, image):
         return DescribedKeypoints(*(self.extractor(image[None].half())))

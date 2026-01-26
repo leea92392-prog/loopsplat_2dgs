@@ -57,7 +57,7 @@ class PoseInitializer():
         # 只初始化增量式MiniBA  
         self.miniBA_incr = MiniBA(  
             1, 1, 0, args.num_pts_miniba_incr, optimize_focal=False, optimize_3Dpts=False,  
-            make_cuda_graph=False, iters=args.iters_miniba_incr)  
+            make_cuda_graph=True, iters=args.iters_miniba_incr)  
         self.PnPRANSAC = RANSACEstimator(args.pnpransac_samples, self.max_pnp_error, EstimatorType.P4P)  
 
     def build_problem(self,
@@ -223,16 +223,7 @@ class PoseInitializer():
             depth = depth.float()    
         if curr_desc_kpts.kpts.dtype != torch.float32:    
             curr_desc_kpts.kpts = curr_desc_kpts.kpts.float()    
-        
-        # 如果没有传入预计算的xyz，则计算  
-        if xyz is None:  
-            kpts_long = curr_desc_kpts.kpts.long()    
-            kpts_int = torch.stack([    
-                kpts_long[..., 0].clamp(0, depth.shape[1]-1),  
-                kpts_long[..., 1].clamp(0, depth.shape[0]-1)  
-            ], dim=-1)    
-            depth_at_kpts = depth[kpts_int[..., 1], kpts_int[..., 0]]    
-            xyz = depth2points(curr_desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0], self.centre)
+
 
         # 与之前的关键帧匹配  
         matched_xyz = []  
@@ -257,6 +248,7 @@ class PoseInitializer():
         print(f"Total matched points for PnP RANSAC: {len(xyz)}")
         print(f"Total matched uvs for PnP RANSAC: {len(uvs)}")
         # 使用上关键帧的位姿作为初始化  
+        # 这个位姿是世界到相机的变换矩阵
         init_pose = prev_keyframes[-1]['pose']  
         Rs6D_init = torch.from_numpy(init_pose[:3, :2]).cuda().float()  
         ts_init = torch.from_numpy(init_pose[:3, 3]).cuda().float()  
@@ -267,6 +259,7 @@ class PoseInitializer():
         if torch.isnan(uvs).any() or torch.isinf(uvs).any():  
             print("WARNING: uvs contains NaN or Inf!")  
         Rt, inliers = self.PnPRANSAC(uvs, xyz, intrinsics[0,0], self.centre, Rs6D_init, ts_init, None)  
+        print("PnP RANSAC Rt:\n", Rt.cpu().numpy())
         if len(inliers) < self.min_num_inliers:  
             return None  
         # MiniBA细化  
@@ -314,5 +307,5 @@ class PoseInitializer():
         final_pose = torch.eye(4, device="cuda")  
         final_pose[:3, :3] = sixD2mtx(Rs6D)[0]  
         final_pose[:3, 3] = ts[0]  
-          
+        final_pose = torch.inverse(final_pose)  # miniBA输出的是w2c，需要取逆得到c2w
         return final_pose.cpu().numpy()

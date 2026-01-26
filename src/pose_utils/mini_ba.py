@@ -14,7 +14,18 @@ from src.pose_utils.utils import mtx2sixD, pts2px, sixD2mtx
 import torch
 import torch.nn as nn
 from torch.func import vmap, jacfwd
+import torch.autograd
 
+# 备份原始的 grad 函数
+_orig_grad = torch.autograd.grad
+
+# 定义一个新的匿名函数，强制把 allow_unused 设为 True
+def patched_grad(*args, **kwargs):
+    kwargs['allow_unused'] = True
+    return _orig_grad(*args, **kwargs)
+
+# 替换掉系统的 grad 函数
+torch.autograd.grad = patched_grad
 
 def project(xyz, R6D_t, f, centre):
     xyz = xyz.float()  
@@ -97,7 +108,7 @@ class MiniBAInternal(nn.Module):
         Expand and organize for jacobian computation
         """
         xyz_e = xyz.unsqueeze(1).expand(-1, self.n_cams, *xyz.shape[1:])
-        Rs6D_ts = torch.cat([Rs6D.view(-1, 6), ts], dim=-1)
+        Rs6D_ts = torch.cat([Rs6D.reshape(-1, 6), ts], dim=-1)        
         Rs6D_ts_e = Rs6D_ts[None].expand(self.npts, *Rs6D_ts.shape)
         f_e = f[None, None].expand(self.npts, self.n_cams, *f.shape)
         centre_e = centre[None, None].expand(self.npts, self.n_cams, *centre.shape)

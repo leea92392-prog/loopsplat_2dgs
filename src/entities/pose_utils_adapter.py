@@ -40,6 +40,8 @@ class PoseUtilsAdapter:
             intrinsics = torch.from_numpy(intrinsics).cuda().float()
         # 从 (H, W, C) 转换为 (C, H, W)  
         image = image.permute(2, 0, 1)  
+
+        #提取特征
         #这里desc_kpts是一个包含关键点、描述子、深度、3d坐标的对象
         desc_kpts = self.feature_detector(image)
         #kpt关键点的2D坐标，根据深度图获取对应深度值
@@ -49,6 +51,21 @@ class PoseUtilsAdapter:
             kpts_long[..., 1].clamp(0, depth.shape[0]-1)   # y坐标  
         ], dim=-1)       
         depth_at_kpts = depth[kpts_int[..., 1], kpts_int[..., 0]]  
+        valid_depth_mask = depth_at_kpts > 0  
+        # 彻底过滤 DescribedKeypoints 的所有字段  
+        desc_kpts.kpts = desc_kpts.kpts[valid_depth_mask]  
+        desc_kpts.feats = desc_kpts.feats[valid_depth_mask]  
+        desc_kpts.valid = desc_kpts.valid[valid_depth_mask]  
+        desc_kpts.has_pt3d = desc_kpts.has_pt3d[valid_depth_mask]  
+        desc_kpts.pts_conf = desc_kpts.pts_conf[valid_depth_mask]  
+        desc_kpts.pts3d = desc_kpts.pts3d[valid_depth_mask]  
+        desc_kpts.depth = desc_kpts.depth[valid_depth_mask]  
+        desc_kpts.nvalid = desc_kpts.valid.sum()  
+        # 过滤深度值  
+        depth_at_kpts = depth_at_kpts[valid_depth_mask]
+        #计算深度像素对应的3D坐标
+        centre = torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2]).cuda()  
+        xyz = depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0], centre).float() 
         if frame_id < 2:  
             # 第一帧使用GT位姿  
             estimated_pose = self.dataset[frame_id][3]
@@ -57,33 +74,27 @@ class PoseUtilsAdapter:
                 'frame_id': frame_id,  
                 'desc_kpts': desc_kpts,  
                 'pose': estimated_pose,  
-                'pts3d': depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0],    
-                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2]).cuda()).float(),
+                'pts3d': xyz,
                 'conf': desc_kpts.pts_conf  
             })
             return estimated_pose  
           
         # 使用pose_utils进行位姿估计  
         estimated_pose = self.pose_initializer.initialize_from_depth(  
-            desc_kpts, depth, intrinsics,frame_id, self.keyframes  
+            desc_kpts, depth, intrinsics,frame_id, self.keyframes,xyz=xyz     
         )  
           
-        if estimated_pose is not None:  
-            # 保存关键帧信息  
-            self.keyframes.append({  
+        # 保存关键帧信息  
+        self.keyframes.append({  
                 'frame_id': frame_id,  
                 'desc_kpts': desc_kpts,  
                 'pose': estimated_pose,  
-                'pts3d': depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0],    
-                    torch.tensor([(self.dataset.width-1)/2, (self.dataset.height-1)/2]).cuda()).float(),  
+                'pts3d': xyz,  
                 'conf': desc_kpts.pts_conf  
-            })  
+         })  
               
-            # 保持关键帧数量在合理范围  
-            if len(self.keyframes) > 10:  
-                self.keyframes = self.keyframes[-10:]  
+        # 保持ba关键帧数量在合理范围  
+        if len(self.keyframes) > 10:  
+            self.keyframes = self.keyframes[-10:]  
                   
-            return estimated_pose  
-        else:  
-            # 追踪失败，使用上一帧位姿  
-            return self.keyframes[-1]['pose'] if self.keyframes else self.dataset[frame_id][3]
+        return estimated_pose  

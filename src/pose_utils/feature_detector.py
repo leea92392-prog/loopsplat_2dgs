@@ -27,7 +27,7 @@ class DescribedKeypoints():
         self.valid = feats.abs().sum(dim=-1) > 0 # [N] 有效关键点掩码
         self.nvalid = self.valid.sum() #
         self.has_pt3d = torch.zeros(kpts.shape[0], dtype=torch.bool, device=kpts.device) # [N] 是否已三角化为 3D 点
-        self.pts_conf = torch.zeros(kpts.shape[0], dtype=torch.float, device=kpts.device) # [N] 3D 点置信度
+        self.pts_conf = torch.ones(kpts.shape[0], dtype=torch.float, device=kpts.device) # [N] 3D 点置信度
         self.pts3d = torch.zeros(kpts.shape[0], 3, dtype=torch.float, device=kpts.device) # [N, 3] 3D 点坐标
         self.depth = torch.zeros(kpts.shape[0], dtype=torch.float, device=kpts.device) # [N] 关键点深度
         self.matches = {} # Dict[int, Matches] 与其他图像的匹配结果，键为其他图像的 ID

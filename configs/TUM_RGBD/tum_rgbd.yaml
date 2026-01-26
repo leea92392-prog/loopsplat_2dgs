@@ -25,10 +25,10 @@ tracking:
     fundmat_samples: 1000  
     max_error: 1.0         
     top_k: 1000
-    num_pts_miniba_incr: 500  
+    num_pts_miniba_incr: 1000  
     min_num_inliers: 30  
     pnpransac_samples: 1000  
-    iters_miniba_incr: 10  
+    iters_miniba_incr: 200  
   use_imu: false
   gt_camera: False
   w_color_loss: 0.6

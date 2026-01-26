@@ -147,8 +147,8 @@ class Mapper(object):
             render_pkg = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"])
 
             image, depth = render_pkg["color"], render_pkg["depth"]
-            show_render_result(render_rgb=image, render_depth=depth,
-                               gt_depth=keyframe["depth"],gt_rgb=keyframe["color"],render_normal=render_pkg["normal"])
+            # show_render_result(render_rgb=image, render_depth=depth,
+            #                    gt_depth=keyframe["depth"],gt_rgb=keyframe["color"],render_normal=render_pkg["normal"])
             if keyframe["exposure_ab"] is not None:
                 image = torch.clamp(image * torch.exp(keyframe["exposure_ab"][0]) + keyframe["exposure_ab"][1], 0, 1.)
             gt_image = keyframe["color"]

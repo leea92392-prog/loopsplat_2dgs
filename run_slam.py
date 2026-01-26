@@ -13,9 +13,9 @@ import matplotlib
 import matplotlib.pyplot as plt
   
 # 在所有其他导入之后立即设置  
-matplotlib.use('Agg')  # 使用非交互式后端  
-plt.rcParams['text.usetex'] = False  
-plt.rcParams['font.family'] = 'DejaVu Sans'
+# matplotlib.use('Agg')  # 使用非交互式后端  
+# plt.rcParams['text.usetex'] = False  
+# plt.rcParams['font.family'] = 'DejaVu Sans'
 
 def get_args():
     parser = argparse.ArgumentParser(

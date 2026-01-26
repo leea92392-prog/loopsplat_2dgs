@@ -22,7 +22,7 @@ class PoseUtilsAdapter:
         })()  
           
         self.pose_initializer = PoseInitializer(  
-            dataset.width, dataset.height, None, self.matcher, 4.0, args  
+            dataset.width, dataset.height, None, self.matcher, 4.0, args,intrinsics=dataset.intrinsics
         )  
           
         # 关键帧历史  

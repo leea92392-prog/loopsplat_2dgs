@@ -20,14 +20,16 @@ from src.pose_utils.ransac import RANSACEstimator, EstimatorType
 
 class PoseInitializer():
     """Fast pose initializer using MiniBA and the previous frames."""
-    def __init__(self, width, height, triangulator, matcher, max_pnp_error, args):
+    def __init__(self, width, height, triangulator, matcher, max_pnp_error, args,intrinsics=None):
         self.width = width
         self.height = height
         self.triangulator = triangulator
         self.max_pnp_error = max_pnp_error
         self.matcher = matcher
-        self.centre = torch.tensor([(width - 1) / 2, (height - 1) / 2], device='cuda').float()
-        # self.num_pts_miniba_bootstrap = args.num_pts_miniba_bootstrap
+        if intrinsics is not None:
+            self.centre = torch.tensor([intrinsics[0, 2], intrinsics[1, 2]], device='cuda').float()
+        else:
+            self.centre = torch.tensor([(width - 1) / 2, (height - 1) / 2], device='cuda').float()        # self.num_pts_miniba_bootstrap = args.num_pts_miniba_bootstrap
         # self.num_kpts = args.num_kpts
         # self.num_pts_pnpransac = 2 * args.num_pts_miniba_incr
         # self.num_pts_miniba_incr = args.num_pts_miniba_incr

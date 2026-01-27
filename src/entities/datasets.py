@@ -535,7 +535,58 @@ class UTMM(BaseDataset):
             return index, color_data, depth_data,self.poses[index], imu
         else:
             return index, color_data, depth_data,self.poses[index], None
-
+class ZED720(BaseDataset):  
+    def __init__(self, dataset_config: dict):  
+        super().__init__(dataset_config)  
+          
+        # 加载场景目录下的images和depth目录  
+        scene_path = self.dataset_path  
+        self.color_paths = sorted(  
+            list((scene_path / "images").glob("*")),  
+            key=lambda x: int(x.stem)  
+        )  
+        self.depth_paths = sorted(  
+            list((scene_path / "depth").glob("*")),  
+            key=lambda x: int(x.stem)  
+        )  
+          
+        # 读取配置参数  
+        self.start = dataset_config["start_idx"]  
+        self.end = dataset_config["early_stop"]  
+        self.stride = dataset_config["stride"]  
+        self.n_img = len(self.color_paths)  
+          
+        # 处理 early_stop 参数  
+        if self.end < 0:  
+            self.end = self.n_img  
+          
+        # 应用 start, end, stride 切片  
+        self.color_paths = self.color_paths[self.start : self.end : self.stride]  
+        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]  
+          
+        # 初始化位姿为单位阵  
+        n_frames = len(self.color_paths)  
+        self.poses = [np.eye(4, dtype=np.float32) for _ in range(n_frames)]  
+          
+        print(f"Loaded {len(self.color_paths)} frames from ZED720 dataset")  
+      
+    def __getitem__(self, index):  
+        color_data = cv2.imread(str(self.color_paths[index]))  
+        if self.distortion is not None:  
+            color_data = cv2.undistort(  
+                color_data, self.intrinsics, self.distortion)  
+        color_data = cv2.cvtColor(color_data, cv2.COLOR_BGR2RGB)  
+          
+        depth_data = cv2.imread(  
+            str(self.depth_paths[index]), cv2.IMREAD_UNCHANGED)  
+        depth_data = depth_data.astype(np.float32) / self.depth_scale  
+          
+        edge = self.crop_edge  
+        if edge > 0:  
+            color_data = color_data[edge:-edge, edge:-edge]  
+            depth_data = depth_data[edge:-edge, edge:-edge]  
+          
+        return index, color_data, depth_data, self.poses[index], None
 
 def get_dataset(dataset_name: str):
     if dataset_name == "replica":
@@ -548,5 +599,6 @@ def get_dataset(dataset_name: str):
         return ScanNetPP
     elif dataset_name == "utmm":
         return UTMM
-
+    elif dataset_name == "zed720":
+        return ZED720
     raise NotImplementedError(f"Dataset {dataset_name} not implemented")

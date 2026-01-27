@@ -261,7 +261,7 @@ class PoseInitializer():
         if torch.isnan(uvs).any() or torch.isinf(uvs).any():  
             print("WARNING: uvs contains NaN or Inf!")  
         Rt, inliers = self.PnPRANSAC(uvs, xyz, intrinsics[0,0], self.centre, Rs6D_init, ts_init, None)  
-        print("PnP RANSAC Rt:\n", Rt.cpu().numpy())
+        # print("PnP RANSAC Rt:\n", Rt.cpu().numpy())
         if len(inliers) < self.min_num_inliers:  
             return None  
         # MiniBA细化  

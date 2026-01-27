@@ -4,7 +4,7 @@ from src.pose_utils.feature_detector import Detector
 from src.pose_utils.matcher import Matcher  
 from src.pose_utils.pose_initializer import PoseInitializer  
 from src.pose_utils.utils import depth2points  
-  
+from src.utils.utils import  (np2torch, torch2np)
 class PoseUtilsAdapter:  
     def __init__(self, config, dataset):  
         self.dataset = dataset  
@@ -67,37 +67,6 @@ class PoseUtilsAdapter:
         centre = torch.tensor([intrinsics[0, 2], intrinsics[1, 2]]).cuda()  # [cx, cy]
         #将2D关键点坐标和深度值转换为3D坐标
         xyz = depth2points(desc_kpts.kpts, depth_at_kpts.unsqueeze(-1), intrinsics[0,0], centre).float() 
-        # if frame_id < 2:  
-        #     # 第一帧使用GT位姿  c2w
-        #     estimated_pose = self.dataset[frame_id][3]
-        #     # 保存关键帧信息
-        #     self.keyframes.append({  
-        #         'frame_id': frame_id,  
-        #         'desc_kpts': desc_kpts,
-        #         #在miniBA中使用的位姿是世界到相机的变换，因此这里需要取逆  
-        #         'pose': np.linalg.inv(estimated_pose),#期望w2c  
-        #         'pts3d': xyz,
-        #         'conf': desc_kpts.pts_conf  
-        #     })
-        #     return estimated_pose  
-          
-        # # 使用pose_utils进行位姿估计 
-        # estimated_pose = self.pose_initializer.initialize_from_depth(  
-        #     desc_kpts, depth, intrinsics,frame_id, self.keyframes,xyz=xyz     
-        # )  
-        # # 保存关键帧信息  
-        # self.keyframes.append({  
-        #         'frame_id': frame_id,  
-        #         'desc_kpts': desc_kpts,  
-        #         'pose': np.linalg.inv(estimated_pose),  
-        #         'pts3d': xyz,  
-        #         'conf': desc_kpts.pts_conf  
-        #  })  
-        # # 保持ba关键帧数量在合理范围  
-        # if len(self.keyframes) > 10:  
-        #     self.keyframes = self.keyframes[-10:]  
-                  
-        # return estimated_pose
         if frame_id ==0:
             estimated_pose = self.dataset[frame_id][3]  # c2w
             # 关键：把相机坐标系的xyz转换到世界坐标系
@@ -123,15 +92,23 @@ class PoseUtilsAdapter:
                 print("estimate failed! use gt pose")
                 estimated_pose = self.dataset[frame_id][3]
             # 关键：用估计出的位姿，把当前帧的相机坐标系xyz转换到世界坐标系
-            c2w = torch.from_numpy(estimated_pose).cuda().float()
-            R, t = c2w[:3, :3], c2w[:3, 3]
-            xyz_world = (xyz @ R.T) + t
-            desc_kpts.pts3d = xyz_world
+            # c2w = torch.from_numpy(estimated_pose).cuda().float()
+            # R, t = c2w[:3, :3], c2w[:3, 3]
+            # xyz_world = (xyz @ R.T) + t
+            # desc_kpts.pts3d = xyz_world
             self.keyframes.append({
                 'frame_id': frame_id,
                 'desc_kpts': desc_kpts,
                 'pose': np.linalg.inv(estimated_pose),  # w2c
-                'pts3d': xyz_world,  # 世界坐标系！
+                'pts3d': xyz,  #这个时候还是相机坐标系，在下面的transform_points里会变换到世界坐标系
                 'conf': desc_kpts.pts_conf
             })
             return estimated_pose
+
+    def update_keyframes(self, final_c2w):
+        """使用经过高斯优化后的位姿变换3D点"""
+        R, t = final_c2w[:3, :3], final_c2w[:3, 3]
+        self.keyframes[-1]['pose'] = np.linalg.inv(torch2np(final_c2w))  # 更新为最终位姿
+        points = self.keyframes[-1]['pts3d']  # 相机坐标系下的点
+        transformed_points = (points @ R.T) + t
+        self.keyframes[-1]['pts3d'] = transformed_points  # 更新为世界坐标系下的点

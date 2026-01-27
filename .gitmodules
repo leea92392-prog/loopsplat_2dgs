@@ -4,3 +4,6 @@
 [submodule "thirdparty/diff-surfel-rasterization"]
 	path = thirdparty/diff-surfel-rasterization
 	url = git@github.com:hbb1/diff-surfel-rasterization.git
+[submodule "thirdparty/graphdecoviewer"]
+	path = thirdparty/graphdecoviewer
+	url = git@github.com:graphdeco-inria/graphdecoviewer.git

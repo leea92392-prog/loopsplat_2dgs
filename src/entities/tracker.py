@@ -198,35 +198,34 @@ class Tracker(object):
         _, image, depth, gt_c2w,imu_meas = self.dataset[frame_id]
         intrinsics = self.dataset.intrinsics  
         if self.use_pose_utils:  
-            # 使用pose_utils进行位姿估计  
-            estimated_c2w = self.pose_utils_adapter.estimate_pose(
-                frame_id, image, depth, intrinsics
-            )
-            print(f"estimated_c2w (frame {frame_id}):\n{estimated_c2w}")
-            print(f"gt_c2w (frame {frame_id}):\n{gt_c2w}")
-            return estimated_c2w, None  
-        if (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
+            # 使用pose_utils进行位姿初始化 
+            init_c2w = self.pose_utils_adapter.estimate_pose(
+                frame_id, image, depth, intrinsics)
+            print(f"init_c2w (frame {frame_id}):\n{init_c2w}")
+        elif (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]
             self.odometer.update_last_rgbd(last_image, last_depth)
-        if self.odometry_type == "gt":
+        elif self.odometry_type == "gt":
             return gt_c2w, None
-        elif self.odometry_type == "const_speed":
-            init_c2w = extrapolate_poses(prev_c2ws[1:])
-        elif self.odometry_type == "odometer":
-            odometer_rel = self.odometer.estimate_rel_pose(image, depth)
-            init_c2w = prev_c2ws[-1] @ odometer_rel
-        elif self.odometry_type == "previous":
-            init_c2w = prev_c2ws[-1]
-        if self.use_imu and imu_meas is not None:
-            init_c2w = self.propagate_imu(
-                        prev_c2ws[-1],
-                        prev_c2ws[-2],
-                        imu_meas,
-                        self.tf["c2i"],
-                        self.tstamps[frame_id - 1] - self.tstamps[frame_id - 2],
-                        # 1 / self.cfg["cam"]["fps"] * self.cfg["stride"],
-                        1 / 100.0,
-                    )
+        if frame_id == 0:
+            return init_c2w, None
+        # elif self.odometry_type == "const_speed":
+        #     init_c2w = extrapolate_poses(prev_c2ws[1:])
+        # elif self.odometry_type == "odometer":
+        #     odometer_rel = self.odometer.estimate_rel_pose(image, depth)
+        #     init_c2w = prev_c2ws[-1] @ odometer_rel
+        # elif self.odometry_type == "previous":
+        #     init_c2w = prev_c2ws[-1]
+        # if self.use_imu and imu_meas is not None:
+        #     init_c2w = self.propagate_imu(
+        #                 prev_c2ws[-1],
+        #                 prev_c2ws[-2],
+        #                 imu_meas,
+        #                 self.tf["c2i"],
+        #                 self.tstamps[frame_id - 1] - self.tstamps[frame_id - 2],
+        #                 # 1 / self.cfg["cam"]["fps"] * self.cfg["stride"],
+        #                 1 / 100.0,
+        #             )
         exposure_ab = None
         init_w2c = np.linalg.inv(init_c2w)
         camera_T = np2torch(init_w2c, "cuda")[:3,3].requires_grad_(True)
@@ -308,4 +307,5 @@ class Tracker(object):
 
         final_c2w = cur_c2w
         final_c2w[-1, :] = torch.tensor([0., 0., 0., 1.], dtype=final_c2w.dtype, device=final_c2w.device)
+        self.pose_utils_adapter.update_keyframes(final_c2w)
         return torch2np(final_c2w), exposure_ab

@@ -135,7 +135,7 @@ class Mapper(object):
 
         iteration = 0
         losses_dict = {}
-
+        #用于优化本帧的迭代次数
         current_frame_iters = self.current_view_opt_iterations * iterations
         distribution = compute_opt_views_distribution(len(keyframes), iterations, current_frame_iters)
         start_time = time.time()
@@ -147,14 +147,17 @@ class Mapper(object):
             render_pkg = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"])
 
             image, depth = render_pkg["color"], render_pkg["depth"]
+            silhouette = render_pkg["alpha"]
+
             # show_render_result(render_rgb=image, render_depth=depth,
             #                    gt_depth=keyframe["depth"],gt_rgb=keyframe["color"],render_normal=render_pkg["normal"])
             if keyframe["exposure_ab"] is not None:
                 image = torch.clamp(image * torch.exp(keyframe["exposure_ab"][0]) + keyframe["exposure_ab"][1], 0, 1.)
             gt_image = keyframe["color"]
             gt_depth = keyframe["depth"]
+            mask = (gt_depth > 0.05)& (silhouette.squeeze(0) > 0.8)
 
-            mask = (gt_depth > 0) & (~torch.isnan(depth)).squeeze(0)
+            # mask = (gt_depth > 0.05) & (~torch.isnan(depth)).squeeze(0)
             #颜色损失
             color_loss = (1.0 - self.opt.lambda_dssim) * l1_loss(
                 image[:, mask], gt_image[:, mask]) + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
@@ -350,7 +353,7 @@ class Mapper(object):
             non_presence_sil_mask = silhouette < 0.6
             #深度误差掩模
             render_depth = result["depth"]
-            depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
+            depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0.05)
             non_presence_depth_mask = depth_error > 10 * depth_error.median()
             #法向量掩模
             surf_norm = result["normal"]
@@ -359,7 +362,7 @@ class Mapper(object):
             # Determine non-presence mask
             non_presence_mask = non_presence_sil_mask | non_presence_depth_mask | norm_mask
             non_presence_mask = non_presence_mask.reshape(-1)
-        valid_depth_mask = gt_depth > 0
+        valid_depth_mask = gt_depth > 0.1
         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
         #创建点云
         new_pt_cld, mean3_sq_dist = self.get_pointcloud(

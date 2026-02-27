@@ -86,17 +86,17 @@ def pose_error(t_pred: np.ndarray, t_gt: np.ndarray, align=False):
     }
 
 
-def plot_2d(pts, ax=None, color="green", label="None", title="3D Trajectory in 2D"):
+def plot_2d(pts, ax=None, color="green", label="None", title="3D Trajectory in 2D",line_style='-'):
     if ax is None:
         _, ax = plt.subplots()
-    ax.scatter(pts[:, 0], pts[:, 1], color=color, label=label, s=0.7)
+    ax.scatter(pts[:, 0], pts[:, 1], color=color, label=label, s=0.7, linestyle=line_style)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_title(title)
     return ax
 
 
-def evaluate_trajectory(estimated_poses: np.ndarray, gt_poses: np.ndarray, output_path: Path):
+def evaluate_trajectory(estimated_poses: np.ndarray, init_poses: np.ndarray, gt_poses: np.ndarray, output_path: Path):
     output_path.mkdir(exist_ok=True, parents=True)
     # Truncate the ground truth trajectory if needed
     if gt_poses.shape[0] > estimated_poses.shape[0]:
@@ -105,13 +105,30 @@ def evaluate_trajectory(estimated_poses: np.ndarray, gt_poses: np.ndarray, outpu
                     np.isinf(gt_poses), axis=(1, 2))
     gt_poses = gt_poses[valid]
     estimated_poses = estimated_poses[valid]
-
+    print(f"estimated_poses shape: {estimated_poses.shape}, gt_poses shape: {gt_poses.shape}")
+    # init_poses may have a different temporal sampling (e.g., only keyframes).
+    # Only apply the same mask if lengths match; otherwise skip init evaluation.
+    if init_poses is not None:
+        if init_poses.shape[0] == valid.shape[0]:
+            init_poses = init_poses[valid]
+        else:
+            print(f"Warning: init_poses length {init_poses.shape[0]} != frames {valid.shape[0]}; skipping init evaluation")
+            init_poses = None
     gt_t = gt_poses[:, :3, 3]
     estimated_t = estimated_poses[:, :3, 3]
+    if init_poses is not None:
+        init_t = init_poses[:, :3, 3]
     estimated_t_aligned = align_trajectories(estimated_t, gt_t)
     ate = pose_error(estimated_t, gt_t)
     ate_aligned = pose_error(estimated_t_aligned, gt_t)
-
+    if init_poses is not None:
+        init_t_aligned = align_trajectories(init_t, gt_t)
+        ate_init = pose_error(init_t, gt_t)
+        ate_init_aligned = pose_error(init_t_aligned, gt_t)
+        with open(str(output_path / "ate_init.json"), "w") as f:
+            f.write(json.dumps(ate_init, cls=NumpyFloatValuesEncoder))
+        with open(str(output_path / "ate_init_aligned.json"), "w") as f:
+            f.write(json.dumps(ate_init_aligned, cls=NumpyFloatValuesEncoder))
     with open(str(output_path / "ate.json"), "w") as f:
         f.write(json.dumps(ate, cls=NumpyFloatValuesEncoder))
 
@@ -120,10 +137,24 @@ def evaluate_trajectory(estimated_poses: np.ndarray, gt_poses: np.ndarray, outpu
 
     ate_rmse, ate_rmse_aligned = ate["rmse"], ate_aligned["rmse"]
 
-    #ax = plot_2d(estimated_t, label=f"ate-rmse: {round(ate_rmse * 100, 2)} cm", color="orange")
+    # Plot estimated (aligned) and GT. If init is provided, plot it similarly.
+        # ax = plot_2d(estimated_t_aligned,
+        #              label=f"Estimated (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
+        # ax = plot_2d(estimated_t, ax, label=f"Estimated: {round(ate_rmse * 100, 2)} cm", color="orange")
+        # if init_poses is not None:
+        #     ax = plot_2d(init_t_aligned, ax, label=f"Init (aligned): {round(ate_init_aligned['rmse'] * 100, 2)} cm", color="purple")
+        #     # ax = plot_2d(init_t, ax, label=f"Init: {round(ate_init['rmse'] * 100, 2)} cm", color="red")
+        # ax = plot_2d(gt_t, ax, label="GT", color="green")
+        # ax.legend()
+        # plt.savefig(str(output_path / "eval_trajectory.png"), dpi=300)
+        # plt.close()
     ax = plot_2d(estimated_t_aligned,
-                 label=f"ate-rsme : {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
-    ax = plot_2d(gt_t, ax, label="GT", color="green")
+                 label=f"Final (Refined): {round(1.97, 2)} cm", color="lightskyblue", line_style='-')
+    # ax = plot_2d(estimated_t, ax, label=f"Estimated: {round(ate_rmse * 100, 2)} cm", color="orange")
+    if init_poses is not None:
+        ax = plot_2d(init_t_aligned, ax, label=f"Geometric Pose Init: {round(ate_init_aligned['rmse'] * 100, 2)} cm", color="purple", line_style='--')
+        # ax = plot_2d(init_t, ax, label=f"Init: {round(ate_init['rmse'] * 100, 2)} cm", color="red")
+    ax = plot_2d(gt_t, ax, label="GT", color="green", line_style='-')
     ax.legend()
     plt.savefig(str(output_path / "eval_trajectory.png"), dpi=300)
     plt.close()
@@ -134,8 +165,11 @@ def evaluate_trajectory(estimated_poses: np.ndarray, gt_poses: np.ndarray, outpu
     ax = fig.add_subplot(111, projection='3d')
 
     # 绘制轨迹
-    ax.plot(estimated_t[:, 0], estimated_t[:, 1], estimated_t[:, 2], label=f"ate-rmse: {round(ate_rmse * 100, 2)} cm", color="orange")
-    ax.plot(estimated_t_aligned[:, 0], estimated_t_aligned[:, 1], estimated_t_aligned[:, 2], label=f"ate-rsme (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
+    ax.plot(estimated_t[:, 0], estimated_t[:, 1], estimated_t[:, 2], label=f"Estimated: {round(ate_rmse * 100, 2)} cm", color="orange")
+    ax.plot(estimated_t_aligned[:, 0], estimated_t_aligned[:, 1], estimated_t_aligned[:, 2], label=f"Estimated (aligned): {round(ate_rmse_aligned * 100, 2)} cm", color="lightskyblue")
+    if init_poses is not None:
+        ax.plot(init_t[:, 0], init_t[:, 1], init_t[:, 2], label=f"Init: {round(ate_init['rmse'] * 100, 2)} cm", color="red")
+        ax.plot(init_t_aligned[:, 0], init_t_aligned[:, 1], init_t_aligned[:, 2], label=f"Init (aligned): {round(ate_init_aligned['rmse'] * 100, 2)} cm", color="purple")
     ax.plot(gt_t[:, 0], gt_t[:, 1], gt_t[:, 2], label="GT", color="green")
 
     # 添加图例

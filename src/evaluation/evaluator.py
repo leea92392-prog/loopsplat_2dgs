@@ -58,6 +58,9 @@ class Evaluator(object):
             self.render_path.mkdir(exist_ok=True, parents=True)
 
         self.estimated_c2w = torch2np(torch.load(self.checkpoint_path / "estimated_c2w.ckpt", map_location=self.device))
+        self.init_c2w = None
+        if (self.checkpoint_path / "init_c2w.ckpt").exists():
+            self.init_c2w = torch2np(torch.load(self.checkpoint_path / "init_c2w.ckpt", map_location=self.device))
         self.submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*')))
         self.exposures_ab = None
         if (self.checkpoint_path / "exposures_ab.ckpt").exists():
@@ -67,7 +70,7 @@ class Evaluator(object):
     def run_trajectory_eval(self):
         """ Evaluates the estimated trajectory """
         print("Running trajectory evaluation...")
-        evaluate_trajectory(self.estimated_c2w, self.gt_poses, self.checkpoint_path)
+        evaluate_trajectory(self.estimated_c2w,self.init_c2w ,self.gt_poses, self.checkpoint_path)
 
     def run_rendering_eval(self):
         """ Renders the submaps and global splats and evaluates the PSNR, LPIPS, SSIM and depth L1 metrics."""
@@ -165,8 +168,10 @@ class Evaluator(object):
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
         scale = 1.0
         volume = o3d.pipelines.integration.ScalableTSDFVolume(
-            voxel_length=10.0 * scale / 512.0,
-            sdf_trunc=0.08 * scale,
+            # voxel_length=10.0 * scale / 512.0,
+            # sdf_trunc=0.08 * scale,
+            voxel_length=0.01,
+            sdf_trunc=0.05,
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
         trajectory_points = []
         submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
@@ -195,7 +200,8 @@ class Evaluator(object):
                     o3d.geometry.Image(np.ascontiguousarray(rendered_color)),
                     o3d.geometry.Image(rendered_depth),
                     depth_scale=scale,
-                    depth_trunc=30,
+                    # depth_trunc=30,
+                    depth_trunc=3.0,
                     convert_rgb_to_intensity=False)
                 volume.integrate(rgbd, intrinsic, estimate_w2c)
                 trajectory_points.append(estimate_c2w[:3, 3])
@@ -531,11 +537,11 @@ class Evaluator(object):
             print("Could not run trajectory eval")
             traceback.print_exc()
 
-        try:
-            self.run_rendering_eval()
-        except Exception:
-            print("Could not run rendering eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_rendering_eval()
+        # except Exception:
+        #     print("Could not run rendering eval")
+        #     traceback.print_exc()
 
         try:
             self.run_reconstruction_eval()

@@ -10,7 +10,7 @@ import imageio
 import trimesh
 from typing import List, Union
 import warnings
-
+from scipy.spatial.transform import Rotation as R
 class BaseDataset(torch.utils.data.Dataset):
 
     def __init__(self, dataset_config: dict):
@@ -564,12 +564,56 @@ class ZED720(BaseDataset):
         self.color_paths = self.color_paths[self.start : self.end : self.stride]  
         self.depth_paths = self.depth_paths[self.start : self.end : self.stride]  
           
-        # 初始化位姿为单位阵  
-        n_frames = len(self.color_paths)  
-        self.poses = [np.eye(4, dtype=np.float32) for _ in range(n_frames)]  
+        self.poses = self.load_zed_poses(str(scene_path))
+        self.poses = self.poses[self.start : self.end : self.stride]
           
         print(f"Loaded {len(self.color_paths)} frames from ZED720 dataset")  
-      
+    
+    def load_zed_poses(self, datapath):
+        pose_file = os.path.join(datapath, 'groundtruth.txt')
+        if not os.path.exists(pose_file):
+            print(f"Warning: {pose_file} not found, using identity poses.")
+            return [np.eye(4, dtype=np.float32) for _ in range(len(self.color_paths))]
+
+        # 读取所有位姿并存入字典，方便根据文件名查找
+        pose_dict = {}
+        with open(pose_file, 'r') as f:
+            for line in f:
+                if line.startswith("#"): continue
+                parts = line.strip().split()
+                if len(parts) < 8: continue
+                
+                img_name = parts[0]
+                # 提取数据: tx, ty, tz, qx, qy, qz, qw (W2C)
+                vals = np.array(parts[1:], dtype=np.float64)
+                t_w2c = vals[0:3]
+                q_w2c = vals[3:7] # qx, qy, qz, qw
+
+                # 构建 W2C 矩阵 (TUM/COLMAP 数据通常是 W2C)
+                rot_mat = R.from_quat(q_w2c).as_matrix()
+                T_w2c = np.eye(4)
+                T_w2c[:3, :3] = rot_mat
+                T_w2c[:3, 3] = t_w2c
+
+                # 转换为 C2W (Camera to World)
+                # T_c2w = T_w2c^-1
+                T_c2w = np.linalg.inv(T_w2c)
+                
+                # 存储时建议只保留文件名，忽略路径前缀
+                pure_name = os.path.basename(img_name)
+                pose_dict[pure_name] = T_c2w.astype(np.float32)
+
+        # 按照 self.color_paths 的顺序匹配位姿
+        final_poses = []
+        for p in self.color_paths:
+            fname = p.name # 获取如 '0.png'
+            if fname in pose_dict:
+                final_poses.append(pose_dict[fname])
+            else:
+                print(f"Warning: Pose for {fname} not found in groundtruth.txt")
+                final_poses.append(np.eye(4, dtype=np.float32))
+        
+        return final_poses
     def __getitem__(self, index):  
         color_data = cv2.imread(str(self.color_paths[index]))  
         if self.distortion is not None:  

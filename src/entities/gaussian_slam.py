@@ -44,6 +44,10 @@ class GaussianSLAM(object):
         #待估计的相机位姿
         self.estimated_c2ws = torch.empty(len(self.dataset), 4, 4)
         self.estimated_c2ws[0] = torch.from_numpy(self.dataset[0][3])
+        #
+        self.init_c2ws = torch.empty(len(self.dataset), 4, 4)
+        self.init_c2ws[0] = torch.from_numpy(self.dataset[0][3])
+        #曝光参数
         #？？？
         self.exposures_ab = torch.zeros(len(self.dataset), 2)
 
@@ -246,16 +250,13 @@ class GaussianSLAM(object):
                 #在回环中更新子地图信息，主要是提取子地图中每个关键帧rgb图像的描述符，将它们拼接成一个大的描述符，
                 #记录自相似程度，记录当前子图在回环中的id
                 self.loop_closer.update_submaps_info(self.keyframes_info)
-                
                 # # apply loop closure
-                # lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
+                lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
                 
-                # if len(lc_output) > 0:
-                #     submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
-                #     self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
-                
+                if len(lc_output) > 0:
+                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)#校正子地图的高斯参数
+                    self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)#校正关键帧的位姿
                 save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
-                
                 gaussian_model = self.start_new_submap(frame_id, gaussian_model)
             #建图关键帧
             if (frame_id in self.mapping_frame_ids):
@@ -278,17 +279,17 @@ class GaussianSLAM(object):
                 if self.enable_exposure:
                     self.keyframes_info[frame_id]["exposure_a"] = exposure_ab[0].item()
                     self.keyframes_info[frame_id]["exposure_b"] = exposure_ab[1].item()
-            # if frame_id == len(self.dataset) - 1 and self.config['lc']['final']:
-            #     self.save_current_submap(gaussian_model)
-            #     print("\n Final loop closure ...")
-            #     self.loop_closer.update_submaps_info(self.keyframes_info)
-            #     lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
-            #     if len(lc_output) > 0:
-            #         submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
-            #         self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
-            if frame_id == len(self.dataset) - 1: 
+            if frame_id == len(self.dataset) - 1 and self.config['lc']['final']:
                 self.save_current_submap(gaussian_model)
-                save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
+                print("\n Final loop closure ...")
+                self.loop_closer.update_submaps_info(self.keyframes_info)
+                lc_output = self.loop_closer.loop_closure(self.estimated_c2ws)
+                if len(lc_output) > 0:
+                    submaps_kf_ids = self.apply_correction_to_submaps(lc_output)
+                    self.update_keyframe_poses(lc_output, submaps_kf_ids, frame_id)
+            # if frame_id == len(self.dataset) - 1: 
+            #     self.save_current_submap(gaussian_model)
+            #     save_dict_to_ckpt(self.estimated_c2ws[:frame_id + 1], "estimated_c2w.ckpt", directory=self.output_path)
 
             if self.enable_exposure:
                 self.exposures_ab[frame_id] = torch.tensor([exposure_ab[0].item(), exposure_ab[1].item()])

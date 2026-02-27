@@ -1,0 +1,19 @@
+inherit_from: configs/zed720/zed720.yaml
+data:
+  input_path: /home/wujie/ws_0122/data/zed720/work_desk
+  output_path: output/zed720/work_desk_trackingtest2
+  scene_name: work_desk
+start_idx: 0
+stride: 1
+early_stop: -1
+rot_thre: 50
+trans_thre: 0.5
+cam:  #intrinsic is different per scene in TUM
+  H: 720 
+  W: 1280 
+  fx: 524.4071655273438
+  fy: 524.4071655273438
+  cx: 649.0006713867188
+  cy: 356.8002624511719
+  crop_edge: 0
+  depth_scale: 1000.0

@@ -75,7 +75,7 @@ class Tracker(object):
         """
         render_dict = render_gaussian_model(gaussian_model, render_settings,est_w2c,)
         rendered_color, rendered_depth = render_dict["color"], render_dict["depth"]
-        #show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,render_normal=render_dict["normal"])
+        # show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,render_normal=render_dict["normal"],render_alpha=render_dict["alpha"],)
         if self.enable_exposure:
             rendered_color = torch.clamp(torch.exp(exposure_ab[0]) * rendered_color + exposure_ab[1], 0, 1.)
         alpha_mask = render_dict["alpha"] > 0.9
@@ -209,6 +209,9 @@ class Tracker(object):
             return gt_c2w, None
         if frame_id == 0:
             return init_c2w, None
+        #验证一下只时候初始化位姿的精度
+        # self.pose_utils_adapter.update_keyframes(torch.from_numpy(init_c2w).cuda())
+        # return init_c2w, None
         # elif self.odometry_type == "const_speed":
         #     init_c2w = extrapolate_poses(prev_c2ws[1:])
         # elif self.odometry_type == "odometer":

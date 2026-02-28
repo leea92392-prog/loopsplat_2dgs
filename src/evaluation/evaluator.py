@@ -22,7 +22,8 @@ from src.entities.arguments import OptimizationParams
 from src.entities.datasets import get_dataset
 from src.entities.gaussian_model import GaussianModel
 from src.evaluation.evaluate_merged_map import (RenderFrames, merge_submaps,
-                                                refine_global_map)
+                                                refine_global_map,
+                                                render_frames_collate_fn)
 from src.evaluation.evaluate_reconstruction import evaluate_reconstruction, clean_mesh
 from src.evaluation.evaluate_trajectory import evaluate_trajectory
 from src.utils.io_utils import load_config, save_dict_to_json, log_metrics_to_wandb
@@ -412,10 +413,11 @@ class Evaluator(object):
         training_frames = RenderFrames(
             self.dataset, self.estimated_c2w, self.height, self.width, self.fx, self.fy, self.exposures_ab)
         training_frames = DataLoader(
-            training_frames, batch_size=1, shuffle=True)
+            training_frames, batch_size=1, shuffle=True, collate_fn=render_frames_collate_fn)
         len_frames = len(training_frames)
         training_frames = cycle(training_frames)
-        merged_cloud = merge_submaps(self.submaps_paths) if init_from == 'splats' else None
+        merge_radius = self.config.get("lc", {}).get("merge_radius", 0.01)
+        merged_cloud = merge_submaps(self.submaps_paths, radius=merge_radius) if init_from == 'splats' else None
 
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
@@ -440,11 +442,11 @@ class Evaluator(object):
 
             psnr_list = []
             for i in tqdm(range(len(test_set))):
-                gt_color, _, render_settings = (
+                gt_color, _ = (
                     test_frames[i]["color"],
-                    test_frames[i]["depth"],
-                    test_frames[i]["render_settings"])
-                render_dict = render_gaussian_model(refined_merged_gaussian_model, render_settings)
+                    test_frames[i]["depth"])
+                render_settings, est_w2c = test_frames[i]["render_settings"]
+                render_dict = render_gaussian_model(refined_merged_gaussian_model, render_settings, est_w2c)
                 rendered_color, _ = (render_dict["color"].permute(1, 2, 0), render_dict["depth"],)
                 rendered_color = torch.clip(rendered_color, 0, 1)
                 save_image(rendered_color.permute(2, 0, 1), self.checkpoint_path / f"nvs_eval/{i:04d}.jpg")
@@ -469,14 +471,15 @@ class Evaluator(object):
 
                 for keyframe_id in submap["submap_keyframes"]:
 
-                    _, gt_color, gt_depth, _ = self.dataset[keyframe_id]
+                    _, gt_color, gt_depth, _, _ = self.dataset[keyframe_id]
                     gt_color = color_transform(gt_color).to(self.device)
                     gt_depth = np2torch(gt_depth).to(self.device)
 
                     estimate_c2w = self.estimated_c2w[keyframe_id]
                     estimate_w2c = np.linalg.inv(estimate_c2w)
+                    render_settings, est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
                     render_dict = render_gaussian_model(
-                        refined_merged_gaussian_model, get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c))
+                        refined_merged_gaussian_model, render_settings, est_w2c)
                     rendered_color, rendered_depth = render_dict["color"].detach(
                     ), render_dict["depth"][0].detach()
                     rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
@@ -537,22 +540,23 @@ class Evaluator(object):
             print("Could not run trajectory eval")
             traceback.print_exc()
 
-        # try:
-        #     self.run_rendering_eval()
-        # except Exception:
-        #     print("Could not run rendering eval")
-        #     traceback.print_exc()
+        try:
+            self.run_rendering_eval()
+        except Exception:
+            print("Could not run rendering eval")
+            traceback.print_exc()
 
         try:
             self.run_reconstruction_eval()
         except Exception:
             print("Could not run reconstruction eval")
             traceback.print_exc()
-        # try:
-        #     self.run_global_map_eval()
-        # except Exception:
-        #     print("Could not run global map eval")
-        #     traceback.print_exc()
+
+        try:
+            self.run_global_map_eval()
+        except Exception:
+            print("Could not run global map eval")
+            traceback.print_exc()
 
         # if self.use_wandb: 
         #     evals = ["rendering_metrics.json", "reconstruction_metrics.json", "ate_aligned.json", "nvs_eval/results.json"]

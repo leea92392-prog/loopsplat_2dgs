@@ -1,12 +1,12 @@
 inherit_from: configs/TUM_RGBD/tum_rgbd.yaml
 start_idx: 50
-stride: 4
+stride: 8
 early_stop: -1
 rot_thre: 50
 trans_thre: 0.5
 data:
   input_path: /home/wujie/ws_0122/data/TUM-RGBD/rgbd_dataset_freiburg3_long_office_household/
-  output_path: output_miniba/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household—per_four_frame_loop/
+  output_path: output_miniba/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household—improve_loop/
   scene_name: rgbd_dataset_freiburg3_long_office_household
 cam: 
   H: 480 

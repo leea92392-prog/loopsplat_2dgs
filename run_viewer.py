@@ -3,7 +3,7 @@
 Launch the Gaussian Viewer for LoopSplat output.
 
 Usage:
-    python run_viewer.py <output_dir>              # Local mode
+    python run_viewer.py <output_dir> [options]    # Local mode
     python run_viewer.py server <output_dir>       # Server mode (for remote viewing)
     python run_viewer.py client                    # Client mode (connect to server)
 
@@ -11,6 +11,14 @@ The output_dir should contain:
     - config.yaml
     - estimated_c2w.ckpt
     - submaps/*.ckpt  (or <scene_name>_global_splats.ply from evaluation)
+
+View options (local mode):
+    --load_mode {auto,submap,global,merge}
+        auto   : Use global PLY if exists, else merge all submaps (default)
+        submap : Visualize a single submap (requires --submap)
+        global : Visualize refined global map (*_global_splats.ply)
+        merge  : Simple merge of all submaps
+    --submap ID   : Submap ID to visualize (e.g. 0, 35). Required when --load_mode submap.
 """
 import sys
 import runpy
@@ -26,8 +34,11 @@ if __name__ == "__main__":
     argv = sys.argv[1:]
     if not argv:
         print(__doc__)
-        print("\nExample:")
+        print("\nExamples:")
         print("  python run_viewer.py output/TUM_RGBD/rgbd_dataset_freiburg1_desk")
+        print("  python run_viewer.py output/... --load_mode submap --submap 35")
+        print("  python run_viewer.py output/... --load_mode global")
+        print("  python run_viewer.py output/... --load_mode merge")
         sys.exit(1)
 
     # Map: "python run_viewer.py <output_dir>" -> "local <output_dir>"

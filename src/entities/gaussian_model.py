@@ -46,7 +46,7 @@ class GaussianModel:
         self._features_rest = torch.empty(0).cuda()
         self._scaling = torch.empty(0).cuda()
         self._rotation = torch.empty(0, 4).cuda()
-        self._rgb = torch.empty(0, device='cuda')#颜色
+        self._rgb = torch.empty(0, 3, device='cuda')  # (N, 3) for RGB
         self._opacity = torch.empty(0).cuda()
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
@@ -248,7 +248,8 @@ class GaussianModel:
             l.append("scale_{}".format(i))
         for i in range(self._rotation.shape[1]):
             l.append("rot_{}".format(i))
-        for i in range(self._rgb.shape[1]):
+        n_rgb = self._rgb.shape[1] if self._rgb.dim() >= 2 else 0
+        for i in range(n_rgb):
             l.append("rgb_{}".format(i))
         return l
 
@@ -279,10 +280,15 @@ class GaussianModel:
             scale = self._scaling.detach().cpu().numpy()
         rotation = self._rotation.detach().cpu().numpy()
         rgb = self._rgb.detach().cpu().numpy()
+        if rgb.ndim == 1 or rgb.shape[0] != xyz.shape[0]:
+            rgb = np.zeros((xyz.shape[0], 3), dtype=np.float32)
         dtype_full = [(attribute, "f4") for attribute in self.construct_list_of_attributes()]
 
         elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        attributes = np.concatenate((xyz, normals, f_dc, f_rest, opacities, scale, rotation), axis=1)
+        attrs_to_concat = [xyz, normals, f_dc, f_rest, opacities, scale, rotation]
+        if self._rgb.dim() >= 2 and self._rgb.shape[1] > 0:  # match construct_list_of_attributes
+            attrs_to_concat.append(rgb)
+        attributes = np.concatenate(attrs_to_concat, axis=1)
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, "vertex")
         PlyData([el]).write(path)
@@ -379,7 +385,15 @@ class GaussianModel:
         return optimizable_tensors
 
     def prune_points(self, mask):
+        mask = mask.detach().bool().to(self._xyz.device).contiguous()
         valid_points_mask = ~mask
+        # Verify all optimizer params have consistent size before pruning
+        n_points = self._xyz.shape[0]
+        if mask.shape[0] != n_points:
+            return
+        for group in self.optimizer.param_groups:
+            if "exposure" not in group["name"] and group["params"][0].shape[0] != n_points:
+                return  # Skip prune if param sizes are inconsistent
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
         self._xyz = optimizable_tensors["xyz"]
@@ -493,5 +507,10 @@ class GaussianModel:
         self._scaling = nn.Parameter(scales.requires_grad_(True))
         self._rotation = nn.Parameter(rots.requires_grad_(True))
         self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        if type(pcd) is BasicPointCloud:
+            rgb_data = np.asarray(pcd.colors)
+        else:
+            rgb_data = np.asarray(pcd._rgb)
+        self._rgb = nn.Parameter(torch.tensor(rgb_data).float().cuda().requires_grad_(True))
         self.max_radii2D = torch.zeros(
             (self.get_xyz().shape[0]), device="cuda")

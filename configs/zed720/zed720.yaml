@@ -9,7 +9,7 @@ seed: 0
 mapping:
   new_submap_every: 80
   map_every: 1
-  iterations: 160
+  iterations: 100
   new_submap_iterations: 150
   new_submap_points_num: -1 
   new_submap_gradient_points_num: 60000 
@@ -21,6 +21,13 @@ mapping:
   submap_using_motion_heuristic: True
   use_normal_reg: true
   use_dist_reg: true
+  use_depth_filter: true
+  depth_filter_kernel_size: 5
+  depth_filter_threshold: 0.05
+  use_outlier_removal: true
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  depth_error_mask_multiplier: 30
 tracking:
   use_pose_utils: true 
   pose_utils:  
@@ -51,6 +58,7 @@ cam:
   crop_edge: 0
   depth_scale: 1000.0
 lc: 
+  merge_radius: 0.01
   min_similarity: 0.5
   pgo_edge_prune_thres: 0.25
   voxel_size: 0.02

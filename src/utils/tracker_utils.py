@@ -51,7 +51,7 @@ def transformation_to_quaternion(RT: Union[torch.Tensor, np.ndarray]):
     R, T = RT[:3, :3], RT[:3, 3]
 
     rot = Rotation.from_matrix(R)
-    quad = rot.as_quat(canonical=True)
+    quad = rot.as_quat()
     quad = np.roll(quad, 1)
     tensor = np.concatenate([quad, T], 0)
     tensor = torch.from_numpy(tensor).float()
@@ -80,7 +80,7 @@ def compute_camera_opt_params(estimate_rel_w2c: np.ndarray) -> tuple:
     Returns:
         A tuple containing two torch.nn.Parameters: camera's rotation and camera's translation.
     """
-    quaternion = Rotation.from_matrix(estimate_rel_w2c[:3, :3]).as_quat(canonical=True)
+    quaternion = Rotation.from_matrix(estimate_rel_w2c[:3, :3]).as_quat()
     quaternion = quaternion[[3, 0, 1, 2]]
     opt_cam_rot = torch.nn.Parameter(np2torch(quaternion, "cuda"))
     opt_cam_trans = torch.nn.Parameter(np2torch(estimate_rel_w2c[:3, 3], "cuda"))

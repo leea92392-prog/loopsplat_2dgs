@@ -1,10 +1,10 @@
 inherit_from: configs/zed720/zed720.yaml
 data:
   input_path: /home/wujie/ws_0122/data/zed720/work_desk
-  output_path: output/zed720/work_desk_trackingtest3
+  output_path: output/zed720/work_desk_trackingtest_improvetest
   scene_name: work_desk
 start_idx: 0
-stride: 1
+stride: 2
 early_stop: -1
 rot_thre: 50
 trans_thre: 0.5

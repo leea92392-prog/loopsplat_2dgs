@@ -3,6 +3,7 @@ import time
 from argparse import ArgumentParser
 
 import numpy as np
+import open3d as o3d
 import torch
 import torchvision
 
@@ -18,8 +19,8 @@ from src.utils.mapper_utils import (calc_psnr, compute_camera_frustum_corners,
                                     create_point_cloud, geometric_edge_mask,
                                     sample_pixels_based_on_gradient)
 from src.utils.gaussian_model_utils import RGB2SH
-from src.utils.utils import (get_render_settings, np2ptcloud, np2torch,
-                             render_gaussian_model, torch2np)
+from src.utils.utils import (filter_depth_outliers, get_render_settings,
+                             np2ptcloud, np2torch, render_gaussian_model, torch2np)
 from src.utils.vis_utils import *  # noqa - needed for debugging
 
 
@@ -155,9 +156,14 @@ class Mapper(object):
                 image = torch.clamp(image * torch.exp(keyframe["exposure_ab"][0]) + keyframe["exposure_ab"][1], 0, 1.)
             gt_image = keyframe["color"]
             gt_depth = keyframe["depth"]
-            mask = (gt_depth > 0.05)& (silhouette.squeeze(0) > 0.8)
-
-            # mask = (gt_depth > 0.05) & (~torch.isnan(depth)).squeeze(0)
+            mask = (gt_depth > 0.05) & (silhouette.squeeze(0) > 0.8)
+            # 深度误差过滤：排除深度误差过大的像素
+            depth_error = torch.abs(depth.squeeze(0) - gt_depth) * (gt_depth > 0.05)
+            valid_depth_error = depth_error[gt_depth > 0.05]
+            if valid_depth_error.numel() > 0:
+                k = self.config.get("depth_error_mask_multiplier", 30)
+                depth_error_thresh = k * valid_depth_error.median()
+                mask = mask & (depth_error <= depth_error_thresh)
             #颜色损失
             color_loss = (1.0 - self.opt.lambda_dssim) * l1_loss(
                 image[:, mask], gt_image[:, mask]) + self.opt.lambda_dssim * (1.0 - ssim(image, gt_image))
@@ -338,15 +344,30 @@ class Mapper(object):
         gt_color = keyframe["color"]
         gt_depth = keyframe["depth"]
         estimate_w2c = keyframe["est_w2c"]
-        #新的子图，直接添加所有的点
+        valid_depth_mask = gt_depth > 0.1
+        # 新子图：边缘+均匀+梯度采样（替代全图添加）
         if is_new_submap:
-            non_presence_mask = torch.ones(
-                    gt_depth.shape, dtype=bool, device="cuda"
-                ).reshape(-1)
-            render_mask = torch.zeros(
-                    gt_depth.shape, dtype=bool, device="cuda"
-                ).reshape(-1)
-        #添加新观察到的点
+            h, w = gt_depth.shape
+            valid_ids = torch.where(valid_depth_mask.reshape(-1))[0].cpu().numpy()
+            # 边缘掩模
+            color_np = (torch2np(gt_color.permute(1, 2, 0)) * 255).astype(np.uint8)
+            edge_mask = geometric_edge_mask(color_np, RGB=True)
+            edge_ids = np.flatnonzero(edge_mask.reshape(-1) & valid_depth_mask.cpu().numpy().reshape(-1))
+            # 均匀采样
+            n_pts = self.new_submap_points_num
+            if n_pts < 0 or len(valid_ids) <= n_pts:
+                uniform_ids = valid_ids
+            else:
+                uniform_ids = np.random.choice(valid_ids, n_pts, replace=False)
+            # 梯度采样
+            gradient_ids = sample_pixels_based_on_gradient(color_np, self.new_submap_gradient_points_num)
+            gradient_ids = gradient_ids[valid_depth_mask.cpu().numpy().reshape(-1)[gradient_ids]]
+            # 合并去重
+            combined_ids = np.unique(np.concatenate([uniform_ids, gradient_ids, edge_ids]))
+            non_presence_mask = np.zeros(h * w, dtype=bool)
+            non_presence_mask[combined_ids] = True
+            non_presence_mask = torch.from_numpy(non_presence_mask).to(device=gt_depth.device)
+        # 添加新观察到的点
         else:
             result = render_gaussian_model(gaussian_model, keyframe["render_settings"],keyframe["est_w2c"])
             silhouette = result["alpha"] 
@@ -362,7 +383,6 @@ class Mapper(object):
             # Determine non-presence mask
             non_presence_mask = non_presence_sil_mask | non_presence_depth_mask | norm_mask
             non_presence_mask = non_presence_mask.reshape(-1)
-        valid_depth_mask = gt_depth > 0.1
         non_presence_mask = non_presence_mask & valid_depth_mask.reshape(-1)
         #创建点云
         new_pt_cld, mean3_sq_dist = self.get_pointcloud(
@@ -372,7 +392,23 @@ class Mapper(object):
                 mask=non_presence_mask,
                 compute_mean_sq_dist=True,
             )
-        #添加高斯
+        # 统计离群点去除
+        if (self.config.get("use_outlier_removal", False) and
+                new_pt_cld.shape[0] > 10):
+            nb_neighbors = self.config.get("outlier_nb_neighbors", 20)
+            std_ratio = self.config.get("outlier_std_ratio", 2.0)
+            cloud = o3d.geometry.PointCloud()
+            cloud.points = o3d.utility.Vector3dVector(new_pt_cld[:, :3].cpu().numpy())
+            cloud.colors = o3d.utility.Vector3dVector(new_pt_cld[:, 3:6].cpu().numpy())
+            cloud, inlier_indices = cloud.remove_statistical_outlier(
+                nb_neighbors=nb_neighbors, std_ratio=std_ratio)
+            if len(inlier_indices) > 0:
+                inlier_indices = np.asarray(inlier_indices)
+                new_pt_cld = new_pt_cld[inlier_indices]
+                mean3_sq_dist = mean3_sq_dist[inlier_indices]
+        # 添加高斯
+        if new_pt_cld.shape[0] == 0:
+            return 0
         new_rgb = new_pt_cld[:, 3:6].float().cuda()
         fused_color = RGB2SH(new_pt_cld[:, 3:6].float().cuda())
         new_features = (torch.zeros( 
@@ -481,6 +517,11 @@ class Mapper(object):
         """
         #读取当前帧的图像和深度图（numpy数组的格式）
         _, gt_color, gt_depth,_,_ = self.dataset[frame_id]
+        # 深度滤波（反投影前）
+        if self.config.get("use_depth_filter", False):
+            kernel_size = self.config.get("depth_filter_kernel_size", 5)
+            threshold = self.config.get("depth_filter_threshold", 0.05)
+            gt_depth = filter_depth_outliers(gt_depth, kernel_size=kernel_size, threshold=threshold)
         estimate_w2c = np.linalg.inv(estimate_c2w)
         #将图像转换为张量
         color_transform = torchvision.transforms.ToTensor()

@@ -232,7 +232,7 @@ class Tracker(object):
         exposure_ab = None
         init_w2c = np.linalg.inv(init_c2w)
         camera_T = np2torch(init_w2c, "cuda")[:3,3].requires_grad_(True)
-        camera_q = np2torch(R.from_matrix(init_w2c[:3,:3]).as_quat(canonical=True)[[3, 0, 1, 2 ]], "cuda").requires_grad_(True)        
+        camera_q = np2torch(R.from_matrix(init_w2c[:3,:3]).as_quat()[[3, 0, 1, 2]], "cuda").requires_grad_(True)        
         pose_optimizer = torch.optim.Adam(
             [
                 {
@@ -254,7 +254,7 @@ class Tracker(object):
         gt_depth = np2torch(depth, "cuda")
         depth_mask = gt_depth > 0.0
         gt_trans = np2torch(gt_c2w[:3, 3])
-        gt_quat = np2torch(R.from_matrix(gt_c2w[:3, :3]).as_quat(canonical=True)[[3, 0, 1, 2]])
+        gt_quat = np2torch(R.from_matrix(gt_c2w[:3, :3]).as_quat()[[3, 0, 1, 2]])
         num_iters = self.config["iterations"]
         current_min_loss = float("inf")
 

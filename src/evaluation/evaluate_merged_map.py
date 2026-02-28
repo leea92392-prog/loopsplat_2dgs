@@ -53,7 +53,12 @@ class RenderFrames(Dataset):
         return frame
 
 
-def merge_submaps(submaps_paths: list, radius: float = 0.0001, device: str = "cuda") -> o3d.geometry.PointCloud:
+def render_frames_collate_fn(batch):
+    """Custom collate that returns the single frame as-is (avoids batching render_settings tuple)."""
+    return batch[0]
+
+
+def merge_submaps(submaps_paths: list, radius: float = 0.01, device: str = "cuda") -> o3d.geometry.PointCloud:
     """ Merge submaps into a single point cloud, which is then used for global map refinement.
     Args:
         segments_paths (list): Folder path of the submaps.
@@ -94,7 +99,7 @@ def merge_submaps(submaps_paths: list, radius: float = 0.0001, device: str = "cu
 
 
 def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, max_iterations: int,
-                      export_refine_mesh=False, output_dir=".",
+                      export_refine_mesh=True, output_dir=".",
                       len_frames=None, o3d_intrinsic=None, enable_sh=True, enable_exposure=False) -> GaussianModel:
     """Refines a global map based on the merged point cloud and training keyframes frames.
     Args:
@@ -130,12 +135,11 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
         gaussian_model.update_learning_rate(iteration)
         if enable_sh and iteration > 0 and iteration % 1000 == 0:
             gaussian_model.oneupSHdegree()
-        gt_color, gt_depth, render_settings = (
-            training_frame["color"].squeeze(0),
-            training_frame["depth"].squeeze(0),
-            training_frame["render_settings"])
+        gt_color = training_frame["color"].squeeze(0) if training_frame["color"].dim() > 3 else training_frame["color"]
+        gt_depth = training_frame["depth"].squeeze(0) if training_frame["depth"].dim() > 2 else training_frame["depth"]
+        render_settings, est_w2c = training_frame["render_settings"]
 
-        render_dict = render_gaussian_model(gaussian_model, render_settings)
+        render_dict = render_gaussian_model(gaussian_model, render_settings, est_w2c)
         rendered_color, rendered_depth = (render_dict["color"].permute(1, 2, 0), render_dict["depth"])
         if enable_exposure and training_frame.get("exposure_ab") is not None:
             rendered_color = torch.clamp(
@@ -149,14 +153,27 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
         depth_loss = l1_loss(
             rendered_depth[:, depth_mask], gt_depth[depth_mask])
 
-        total_loss = color_loss + depth_loss + reg_loss
+        rend_dist = render_dict["rend_dist"]
+        dist_loss = 1000*rend_dist.mean()
+        rend_normal  = render_dict['rend_normal']
+        surf_normal = render_dict['normal']
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_loss = 0.05*(normal_error).mean()
+        total_loss = color_loss + depth_loss + reg_loss + dist_loss + normal_loss
+
         total_loss.backward()
 
         with torch.no_grad():
-            if iteration % 500 == 0:
-                prune_mask = (gaussian_model.get_opacity() < 0.005).squeeze()
-                gaussian_model.prune_points(prune_mask)
-
+            # Skip prune at iteration 0; delay first prune to let model converge
+            if iteration > 0 and iteration % 500 == 0:
+                prune_mask = (gaussian_model.get_opacity() < 0.05).squeeze()
+                n_valid = (~prune_mask).sum().item()
+                n_prune = prune_mask.sum().item()
+                n_before = gaussian_model.get_size()
+                if n_valid > 0:  # Only prune if we keep at least some points
+                    gaussian_model.prune_points(prune_mask)
+                n_after = gaussian_model.get_size()
+                print(f"prune: removing {n_prune} low-opacity points, before={n_before} after={n_after}")
             # Optimizer step
             gaussian_model.optimizer.step()
             gaussian_model.optimizer.zero_grad(set_to_none=True)
@@ -172,13 +189,11 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
                 color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
             for i in tqdm(range(len_frames), desc="Integrating mesh"):  # one cycle
                 training_frame = next(training_frames)
-                gt_color, gt_depth, render_settings, estimate_w2c = (
-                    training_frame["color"].squeeze(0),
-                    training_frame["depth"].squeeze(0),
-                    training_frame["render_settings"],
-                    training_frame["estimate_w2c"])
+                gt_color = training_frame["color"].squeeze(0) if training_frame["color"].dim() > 3 else training_frame["color"]
+                gt_depth = training_frame["depth"].squeeze(0) if training_frame["depth"].dim() > 2 else training_frame["depth"]
+                render_settings, estimate_w2c = training_frame["render_settings"]
 
-                render_dict = render_gaussian_model(gaussian_model, render_settings)
+                render_dict = render_gaussian_model(gaussian_model, render_settings, estimate_w2c)
                 rendered_color, rendered_depth = (
                     render_dict["color"].permute(1, 2, 0), render_dict["depth"])
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)

@@ -72,7 +72,11 @@ class GaussianViewer(Viewer):
         """Load from LoopSplat output directory."""
         from src.viewer.loop_splat_scene_model import LoopSplatSceneModel
         viewer = cls(mode)
-        viewer.scene_model = LoopSplatSceneModel.from_output_dir(output_dir)
+        load_mode = getattr(args, "load_mode", "auto") if args else "auto"
+        submap_id = getattr(args, "submap", None) if args else None
+        viewer.scene_model = LoopSplatSceneModel.from_output_dir(
+            output_dir, load_mode=load_mode, submap_id=submap_id
+        )
         return viewer
 
     @classmethod
@@ -415,12 +419,18 @@ if __name__ == "__main__":
     local = subparsers.add_parser("local")
     local.add_argument("output_dir", help="Path to LoopSplat output directory (contains config.yaml, submaps/, etc.)")
     local.add_argument('--anchor_overlap', type=float, default=0.3)
+    local.add_argument("--load_mode", choices=["auto", "submap", "global", "merge"], default="auto",
+                       help="Load mode: auto (global if exists else merge), submap, global, merge")
+    local.add_argument("--submap", type=int, default=None,
+                       help="Submap ID to visualize (e.g. 0, 35). Required when --mode submap.")
     client = subparsers.add_parser("client")
     client.add_argument("--ip", default="localhost")
     client.add_argument("--port", type=int, default=6009)
     server = subparsers.add_parser("server")
     server.add_argument("output_dir", help="Path to LoopSplat output directory")
     server.add_argument('--anchor_overlap', type=float, default=0.3)
+    server.add_argument("--load_mode", choices=["auto", "submap", "global", "merge"], default="auto")
+    server.add_argument("--submap", type=int, default=None)
     server.add_argument("--ip", default="localhost")
     server.add_argument("--port", type=int, default=6009)
     args = parser.parse_args()

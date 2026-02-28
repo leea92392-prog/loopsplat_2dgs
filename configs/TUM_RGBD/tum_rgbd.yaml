@@ -7,8 +7,8 @@ seed: 0
 mapping:
   new_submap_every: 50 #50
   map_every: 1
-  iterations: 100 #100
-  new_submap_iterations: 150 #200
+  iterations: 80 #100
+  new_submap_iterations: 120 #200
   new_submap_points_num: 180000 
   new_submap_gradient_points_num: 50000 
   new_frame_sample_size: 30000 
@@ -19,6 +19,13 @@ mapping:
   submap_using_motion_heuristic: True
   use_normal_reg: true
   use_dist_reg: true
+  use_depth_filter: true
+  depth_filter_kernel_size: 5
+  depth_filter_threshold: 0.05
+  use_outlier_removal: false
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  depth_error_mask_multiplier: 50
 tracking:
   use_pose_utils: true 
   pose_utils:  
@@ -32,7 +39,7 @@ tracking:
   use_imu: false
   gt_camera: False
   w_color_loss: 0.6
-  iterations: 100 #200
+  iterations: 50 #200
   cam_rot_lr: 0.002
   cam_trans_lr: 0.01
   odometry_type: "const_speed"  # gt, const_speed, odometer
@@ -46,6 +53,7 @@ tracking:
   mask_invalid_depth: True
   enable_exposure: False
 lc: 
+  merge_radius: 0.01
   min_similarity: 0.45
   pgo_edge_prune_thres: 0.25
   voxel_size: 0.02

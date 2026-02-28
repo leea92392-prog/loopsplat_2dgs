@@ -197,7 +197,19 @@ class LoopSplatSceneModel:
         return colors
 
     @classmethod
-    def from_output_dir(cls, output_dir: str):
+    def from_output_dir(cls, output_dir: str, load_mode: str = "auto", submap_id: int = None):
+        """
+        Load scene from LoopSplat output directory.
+
+        Args:
+            output_dir: Path to output directory
+            load_mode: "auto" | "submap" | "global" | "merge"
+                - auto: use global PLY if exists, else merge all submaps
+                - submap: load single submap (requires submap_id)
+                - global: load refined global (*_global_splats.ply)
+                - merge: simple merge of all submaps
+            submap_id: Submap ID when load_mode="submap" (e.g. 0, 35)
+        """
         output_path = Path(output_dir)
         if not output_path.exists():
             raise FileNotFoundError(f"Output dir not found: {output_dir}")
@@ -213,9 +225,9 @@ class LoopSplatSceneModel:
             raise FileNotFoundError(f"estimated_c2w.ckpt not found in {output_path}")
         estimated_c2w = torch.load(poses_path, map_location="cpu")
         if isinstance(estimated_c2w, torch.Tensor):
-            keyframe_poses = estimated_c2w.numpy()
+            all_keyframe_poses = estimated_c2w.numpy()
         else:
-            keyframe_poses = np.array(estimated_c2w)
+            all_keyframe_poses = np.array(estimated_c2w)
 
         scene_name = config.get("data", {}).get("scene_name", "scene")
         ply_path = output_path / f"{scene_name}_global_splats.ply"
@@ -223,26 +235,69 @@ class LoopSplatSceneModel:
             found = list(output_path.glob("*_global_splats.ply"))
             ply_path = found[0] if found else None
 
+        submaps_dir = output_path / "submaps"
+        submap_paths = []
+        if submaps_dir.exists():
+            submap_paths = sorted(submaps_dir.glob("*.ckpt"), key=lambda p: int(p.stem))
+
         gaussian_model = GaussianModel(sh_degree=3, isotropic=False)
         gaussian_model.active_sh_degree = 0
 
-        if ply_path is not None and ply_path.exists():
+        use_ply = False
+        use_submap = False
+        use_merge = False
+
+        if load_mode == "submap":
+            if submap_id is None:
+                raise ValueError("--submap ID is required when --mode submap")
+            if not submap_paths:
+                raise FileNotFoundError(f"No submaps in {submaps_dir}")
+            if submap_id < 0 or submap_id >= len(submap_paths):
+                raise ValueError(f"Submap ID {submap_id} out of range [0, {len(submap_paths)-1}]")
+            use_submap = True
+        elif load_mode == "global":
+            if ply_path is None or not ply_path.exists():
+                raise FileNotFoundError(
+                    f"Refined global PLY not found. Run evaluation to generate *_global_splats.ply"
+                )
+            use_ply = True
+        elif load_mode == "merge":
+            if not submap_paths:
+                raise FileNotFoundError(f"No submaps in {submaps_dir}")
+            use_merge = True
+        else:  # auto
+            if ply_path is not None and ply_path.exists():
+                use_ply = True
+            elif submap_paths:
+                use_merge = True
+            else:
+                raise FileNotFoundError(
+                    "Neither *_global_splats.ply nor submaps/ found. "
+                    "Run evaluation or ensure submaps exist."
+                )
+
+        if use_ply:
             gaussian_model.cfg = {"device": "cuda"}
             gaussian_model.load_ply(str(ply_path))
-        else:
-            submaps_dir = output_path / "submaps"
-            if not submaps_dir.exists():
-                raise FileNotFoundError(
-                    f"Neither {ply_path.name} nor submaps/ found. "
-                    "Run evaluation to generate global_splats.ply, or ensure submaps exist."
-                )
-            submap_paths = sorted(submaps_dir.glob("*.ckpt"))
-            if not submap_paths:
-                raise FileNotFoundError(f"No .ckpt files in {submaps_dir}")
+            keyframe_poses = all_keyframe_poses
+        elif use_submap:
+            submap_path = submap_paths[submap_id]
+            ckpt = torch.load(submap_path, map_location="cuda")
+            gp = ckpt["gaussian_params"]
+            kf_ids = ckpt["submap_keyframes"]
+            keyframe_poses = all_keyframe_poses[kf_ids]
+            opt = OptimizationParams(ArgumentParser(description="Viewer"))
+            gaussian_model.training_setup(opt)
+            gaussian_model.densification_postfix(
+                gp["xyz"].cuda(), gp["rgb"].cuda(), gp["features_dc"].cuda(),
+                gp["features_rest"].cuda(), gp["opacity"].cuda(),
+                gp["scaling"].cuda(), gp["rotation"].cuda()
+            )
+        else:  # use_merge
             opt = OptimizationParams(ArgumentParser(description="Viewer"))
             gaussian_model.training_setup(opt)
             all_xyz, all_rgb, all_fdc, all_frest = [], [], [], []
-            all_opacity, all_scaling, all_rotation = [], [], []
+            all_opacity, all_scaling, all_rotation = [], [], [], []
             for p in submap_paths:
                 ckpt = torch.load(p, map_location="cuda")
                 gp = ckpt["gaussian_params"]
@@ -261,5 +316,6 @@ class LoopSplatSceneModel:
             scaling = torch.cat(all_scaling, dim=0).cuda()
             rotation = torch.cat(all_rotation, dim=0).cuda()
             gaussian_model.densification_postfix(xyz, rgb, fdc, frest, opacity, scaling, rotation)
+            keyframe_poses = all_keyframe_poses
 
         return cls(gaussian_model, config, keyframe_poses)

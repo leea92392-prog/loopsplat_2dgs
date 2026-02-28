@@ -78,7 +78,7 @@ class Loop_closure(object):
                 znear=0.01,
                 zfar=100.0,
                 fx = self.config["cam"]["fx"],
-                fy = self.config["cam"]["fx"],
+                fy = self.config["cam"]["fy"],
                 cx = self.config["cam"]["cx"],
                 cy = self.config["cam"]["cy"],
                 W = self.config["cam"]["W"],
@@ -306,7 +306,7 @@ class Loop_closure(object):
                     # TODO: update odometry edge with the PGO_edge class
 
                 elif target_id in matches: # loop closure edge
-                    reg_dict = self.pairwise_registration(source_submap, target_submap, "gs_reg")
+                    reg_dict = self.pairwise_registration(source_submap, target_submap, "robust_icp")
                     if not reg_dict['successful']: continue
                     loop_record = {  
                         'source_submap_id': source_id,  
@@ -587,6 +587,11 @@ class Loop_closure(object):
                 o3d.pipelines.registration.TransformationEstimationPointToPlane())
             delta = icp_fine.transformation
             output["transformation"] = np.array(delta)
+            output["successful"] = (
+                not np.isnan(delta).any()
+                and abs(delta[3, 3] - 1.0) < 1e-6
+                and icp_fine.fitness > 0.1
+            )
         elif method == "robust_icp":
             voxel_size = 0.04
             sigma = 0.01
@@ -622,6 +627,11 @@ class Loop_closure(object):
             output["fitness"] = icp_fine.fitness
             output["inlier_rmse"] = icp_fine.inlier_rmse
             output["registration_time"] = toc-tic
+            output["successful"] = (
+                not np.isnan(delta).any()
+                and abs(delta[3, 3] - 1.0) < 1e-6
+                and icp_fine.fitness > 0.1
+            )
 
         elif method == "identity":
             delta = np.identity(4)

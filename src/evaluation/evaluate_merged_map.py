@@ -98,9 +98,39 @@ def merge_submaps(submaps_paths: list, radius: float = 0.01, device: str = "cuda
     return filtered_pt_cloud
 
 
+def _scale_mode_1d(scales_1d: np.ndarray, bins: int = 100) -> float:
+    """Approximate mode of 1D scale distribution via histogram (bin center with max count)."""
+    if scales_1d.size == 0:
+        return 0.0
+    mn, mx = scales_1d.min(), scales_1d.max()
+    if mn >= mx:
+        return float(mn)
+    counts, bin_edges = np.histogram(scales_1d, bins=min(bins, max(2, scales_1d.size)))
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    return float(bin_centers[np.argmax(counts)])
+
+
+def prune_oversized_gaussians(gaussian_model: GaussianModel, max_scale_ratio: float = 3.0) -> int:
+    """Remove Gaussians whose max scale > max_scale_ratio * mode(scale). Returns number pruned."""
+    scales = gaussian_model.get_scaling()
+    scale_max = scales.max(dim=-1).values.detach().cpu().numpy()
+    mode_scale = _scale_mode_1d(scale_max)
+    threshold = max_scale_ratio * mode_scale
+    prune_mask = torch.from_numpy(scale_max > threshold).to(scales.device)
+    n_prune = prune_mask.sum().item()
+    if n_prune > 0:
+        n_before = gaussian_model.get_size()
+        gaussian_model.prune_points(prune_mask)
+        n_after = gaussian_model.get_size()
+        print(f"prune_oversized: mode_scale={mode_scale:.6f} threshold={max_scale_ratio}*mode={threshold:.6f} "
+              f"removed {n_prune} Gaussians (before={n_before} after={n_after})")
+    return n_prune
+
+
 def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, max_iterations: int,
                       export_refine_mesh=True, output_dir=".",
-                      len_frames=None, o3d_intrinsic=None, enable_sh=True, enable_exposure=False) -> GaussianModel:
+                      len_frames=None, o3d_intrinsic=None, enable_sh=True, enable_exposure=False,
+                      max_scale_ratio_to_mode: float = 3.0) -> GaussianModel:
     """Refines a global map based on the merged point cloud and training keyframes frames.
     Args:
         pt_cloud (o3d.geometry.PointCloud): The merged point cloud used for refinement.
@@ -127,6 +157,9 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
     else:
         gaussian_model.training_setup(opt_params)
         gaussian_model.add_points(pt_cloud)
+
+    if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
+        prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode)
 
     iteration = 0
     for iteration in tqdm(range(max_iterations), desc="Refinement"):
@@ -174,6 +207,8 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames: list, 
                     gaussian_model.prune_points(prune_mask)
                 n_after = gaussian_model.get_size()
                 print(f"prune: removing {n_prune} low-opacity points, before={n_before} after={n_after}")
+                if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
+                    prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode)
             # Optimizer step
             gaussian_model.optimizer.step()
             gaussian_model.optimizer.zero_grad(set_to_none=True)

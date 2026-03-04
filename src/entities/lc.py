@@ -531,7 +531,7 @@ class Loop_closure(object):
         }
         return segment
     #点云配准（注册子图节点之间的边？？？），配准的结果会被用来作为位姿图的边约束
-    def pairwise_registration(self, submap_source, submap_target, method="gs_reg"):
+    def pairwise_registration(self, submap_source, submap_target, method="robust_icp"):
         #从子图中提取高斯点云、第一个关键帧的位姿、第一个关键帧的真实位姿
         segment_source = self.submap_to_segment(submap_source)
         segment_target = self.submap_to_segment(submap_target)

@@ -240,7 +240,7 @@ class LoopSplatSceneModel:
         if submaps_dir.exists():
             submap_paths = sorted(submaps_dir.glob("*.ckpt"), key=lambda p: int(p.stem))
 
-        gaussian_model = GaussianModel(sh_degree=3, isotropic=False)
+        gaussian_model = GaussianModel(sh_degree=3)
         gaussian_model.active_sh_degree = 0
 
         use_ply = False
@@ -297,7 +297,7 @@ class LoopSplatSceneModel:
             opt = OptimizationParams(ArgumentParser(description="Viewer"))
             gaussian_model.training_setup(opt)
             all_xyz, all_rgb, all_fdc, all_frest = [], [], [], []
-            all_opacity, all_scaling, all_rotation = [], [], [], []
+            all_opacity, all_scaling, all_rotation = [], [], []
             for p in submap_paths:
                 ckpt = torch.load(p, map_location="cuda")
                 gp = ckpt["gaussian_params"]

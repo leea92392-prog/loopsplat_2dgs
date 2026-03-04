@@ -30,7 +30,7 @@ def apply_transform(xyz: np.ndarray, tsfm: np.ndarray) -> np.ndarray:
 
 
 def main():
-    base = Path("output_miniba/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household—improve")
+    base = Path("output_miniba/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household—improve_loop_per2frame")
     submaps_dir = base / "submaps"
     lc_path = base / "loop_closures" / "loop_closure_info_1.json"
 

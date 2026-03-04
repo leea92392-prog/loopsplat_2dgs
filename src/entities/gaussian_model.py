@@ -23,7 +23,7 @@ from src.utils.gaussian_model_utils import (RGB2SH, build_scaling_rotation,
 
 
 class GaussianModel:
-    def __init__(self, sh_degree: int = 3, isotropic=False):
+    def __init__(self, sh_degree: int = 3, isotropic=True):
         self.gaussian_param_names = [
             "active_sh_degree",
             "xyz",

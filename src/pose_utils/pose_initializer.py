@@ -235,7 +235,7 @@ class PoseInitializer():
         for keyframe in prev_keyframes[-3:]:  # 使用最近2个关键帧  
             matches = self.matcher(curr_desc_kpts, keyframe['desc_kpts'],   
                                  remove_outliers=True, update_kpts_flag="all", kID=cur_frame_id, kID_other=keyframe['frame_id'])  
-            print(f"Frame {cur_frame_id} matched with Keyframe {keyframe['frame_id']}: {len(matches.kpts)} inliers.")
+            # print(f"Frame {cur_frame_id} matched with Keyframe {keyframe['frame_id']}: {len(matches.kpts)} inliers.")
             if len(matches.kpts) > self.min_num_inliers:  
                 matched_xyz.append(keyframe['pts3d'][matches.idx_other])  
                 matched_uvs.append(matches.kpts)  

@@ -201,7 +201,7 @@ class Tracker(object):
             # 使用pose_utils进行位姿初始化 
             init_c2w = self.pose_utils_adapter.estimate_pose(
                 frame_id, image, depth, intrinsics)
-            print(f"init_c2w (frame {frame_id}):\n{init_c2w}")
+            # print(f"init_c2w (frame {frame_id}):\n{init_c2w}")
         elif (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]
             self.odometer.update_last_rgbd(last_image, last_depth)

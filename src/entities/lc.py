@@ -325,13 +325,16 @@ class Loop_closure(object):
                     loop_edges.append((source_id, target_id, ae.item(), te.item()))
                     
                     transformation = reg_dict['transformation']
-                    information = reg_dict['information']
+                    information = np.asarray(reg_dict['information'], dtype=np.float64)
+                    loop_info_scale = self.config['lc'].get('pgo_loop_information_scale', 10.0)
+                    information = information * loop_info_scale
                     pose_graph.edges.append(
                         o3d.pipelines.registration.PoseGraphEdge(source_id,
                                                                 target_id,
                                                                 transformation,
                                                                 information,
-                                                                uncertain=True))
+                                                                uncertain=True,
+                                                                confidence=1.0))
                     new_submap_valid_loop = True
                 del target_submap  
                 torch.cuda.empty_cache()  
@@ -371,6 +374,7 @@ class Loop_closure(object):
         
         if len(loop_edges)>0 and len(loop_edges) > self.n_loop_edges: 
             print("Optimizing PoseGraph ...")
+            n_loop_before = self._log_loop_edge_debug(pose_graph, stage="before PGO")
             option = o3d.pipelines.registration.GlobalOptimizationOption(
                 max_correspondence_distance=self.max_correspondence_distance_fine,
                 edge_prune_threshold=self.config['lc']['pgo_edge_prune_thres'],
@@ -380,7 +384,7 @@ class Loop_closure(object):
                 o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
                 o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
                 option)
-            
+            self._log_loop_edge_debug(pose_graph, stage="after PGO", n_loop_before=n_loop_before)
             self.pgo_count += 1
             self.n_loop_edges = len(loop_edges)
             
@@ -409,7 +413,31 @@ class Loop_closure(object):
             with open(output_dir / f"loop_closure_info_{self.pgo_count}.json", "w") as f:  
                 json.dump(loop_info, f, cls=NumpyEncoder, indent=4)  
         return correction_list
-    
+
+    def _log_loop_edge_debug(self, pose_graph, stage="before PGO", n_loop_before=None):
+        """打印回环边是否参与优化及权重。edge_prune_threshold 对应 confidence（line process 权重）：confidence < 阈值的边会被 prune。"""
+        thres = self.config["lc"].get("pgo_edge_prune_thres", 0.25)
+        n_odom = sum(1 for e in pose_graph.edges if not e.uncertain)
+        n_loop = sum(1 for e in pose_graph.edges if e.uncertain)
+        print(f"[PGO debug] {stage}: total edges = {len(pose_graph.edges)} (odom={n_odom}, loop={n_loop})")
+        print(f"  edge_prune_threshold = {thres} (metric=confidence; loop edge kept iff confidence >= {thres})")
+        if n_loop_before is not None and n_loop < n_loop_before:
+            print(f"  -> {n_loop_before - n_loop} loop edge(s) were PRUNED (confidence fell below threshold during optimization)")
+        for i, e in enumerate(pose_graph.edges):
+            if not e.uncertain:
+                continue
+            info = np.asarray(e.information)
+            conf = float(e.confidence)
+            satisfies = conf >= thres
+            info_trace = np.trace(info)
+            info_fro = np.linalg.norm(info, "fro")
+            status = "kept (>= thres)" if satisfies else "PRUNED (conf < thres)"
+            print(f"  loop edge {i}: ({e.source_node_id} -> {e.target_node_id}) "
+                  f"confidence={conf:.4f} [{status}] information_trace={info_trace:.2f} information_fro={info_fro:.2f}")
+        if n_loop == 0:
+            print("  (no loop edges in graph)")
+        return n_loop
+
     def analyse_pgo(self, odometry_edges, loop_edges, pose_graph):
         """analyse the results from pose graph optimization
 

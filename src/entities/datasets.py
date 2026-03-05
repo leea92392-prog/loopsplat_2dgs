@@ -560,13 +560,32 @@ class ZED720(BaseDataset):
         if self.end < 0:  
             self.end = self.n_img  
           
-        # 应用 start, end, stride 切片  
-        self.color_paths = self.color_paths[self.start : self.end : self.stride]  
-        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]  
-          
+        # 应用 start, end, stride 切片（只对 path 列表切片一次）
+        self.color_paths = self.color_paths[self.start : self.end : self.stride]
+        self.depth_paths = self.depth_paths[self.start : self.end : self.stride]
+        # load_zed_poses 内部已按当前 self.color_paths 顺序匹配位姿，不再对 poses 做二次切片
         self.poses = self.load_zed_poses(str(scene_path))
-        self.poses = self.poses[self.start : self.end : self.stride]
-          
+
+        # 可选：与 UTMM 一致，支持通过 desired_height/desired_width 重设图像尺寸并缩放内参
+        self.desired_height = dataset_config.get("desired_height", self.height)
+        self.desired_width = dataset_config.get("desired_width", self.width)
+        if self.desired_height != self.height or self.desired_width != self.width:
+            h_ratio = float(self.desired_height) / self.height
+            w_ratio = float(self.desired_width) / self.width
+            self.fx *= w_ratio
+            self.fy *= h_ratio
+            self.cx *= w_ratio
+            self.cy *= h_ratio
+            self.height = self.desired_height
+            self.width = self.desired_width
+            self.fovx = 2 * math.atan(self.width / (2 * self.fx))
+            self.fovy = 2 * math.atan(self.height / (2 * self.fy))
+            self.intrinsics = np.array(
+                [[self.fx, 0, self.cx], [0, self.fy, self.cy], [0, 0, 1]])
+        else:
+            self.desired_height = self.height
+            self.desired_width = self.width
+
         print(f"Loaded {len(self.color_paths)} frames from ZED720 dataset")  
     
     def load_zed_poses(self, datapath):
@@ -614,22 +633,31 @@ class ZED720(BaseDataset):
                 final_poses.append(np.eye(4, dtype=np.float32))
         
         return final_poses
-    def __getitem__(self, index):  
-        color_data = cv2.imread(str(self.color_paths[index]))  
-        if self.distortion is not None:  
-            color_data = cv2.undistort(  
-                color_data, self.intrinsics, self.distortion)  
-        color_data = cv2.cvtColor(color_data, cv2.COLOR_BGR2RGB)  
-          
-        depth_data = cv2.imread(  
-            str(self.depth_paths[index]), cv2.IMREAD_UNCHANGED)  
-        depth_data = depth_data.astype(np.float32) / self.depth_scale  
-          
-        edge = self.crop_edge  
-        if edge > 0:  
-            color_data = color_data[edge:-edge, edge:-edge]  
-            depth_data = depth_data[edge:-edge, edge:-edge]  
-          
+    def __getitem__(self, index):
+        color_data = cv2.imread(str(self.color_paths[index]))
+        if self.distortion is not None:
+            color_data = cv2.undistort(
+                color_data, self.intrinsics, self.distortion)
+        color_data = cv2.cvtColor(color_data, cv2.COLOR_BGR2RGB)
+
+        depth_data = cv2.imread(
+            str(self.depth_paths[index]), cv2.IMREAD_UNCHANGED)
+        depth_data = depth_data.astype(np.float32) / self.depth_scale
+
+        edge = self.crop_edge
+        if edge > 0:
+            color_data = color_data[edge:-edge, edge:-edge]
+            depth_data = depth_data[edge:-edge, edge:-edge]
+
+        # 与 UTMM 一致：支持通过 desired_height/desired_width 重设图像尺寸
+        if (self.desired_height, self.desired_width) != (color_data.shape[0], color_data.shape[1]):
+            color_data = cv2.resize(
+                color_data, (self.desired_width, self.desired_height),
+                interpolation=cv2.INTER_LINEAR)
+            depth_data = cv2.resize(
+                depth_data, (self.desired_width, self.desired_height),
+                interpolation=cv2.INTER_NEAREST)
+
         return index, color_data, depth_data, self.poses[index], None
 
 def get_dataset(dataset_name: str):

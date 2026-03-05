@@ -421,9 +421,19 @@ class Evaluator(object):
 
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
-        refined_merged_gaussian_model = refine_global_map(merged_cloud, training_frames, 30000, export_refine_mesh=False,
-                                                          output_dir=self.checkpoint_path, len_frames=len_frames, 
-                                                          o3d_intrinsic=intrinsic)
+        refine_cfg = self.config.get("refine_global_map", {})
+        add_gaussians_every = int(refine_cfg.get("add_gaussians_every", 500))
+        refined_merged_gaussian_model = refine_global_map(
+            merged_cloud, training_frames, 30000, export_refine_mesh=False,
+            output_dir=self.checkpoint_path, len_frames=len_frames,
+            o3d_intrinsic=intrinsic,
+            add_gaussians_every=add_gaussians_every,
+            height=self.height, width=self.width, fx=self.fx, fy=self.fy, cx=self.cx, cy=self.cy,
+            add_gaussians_max_points=int(refine_cfg.get("add_gaussians_max_points", 5000)),
+            depth_error_median_k=float(refine_cfg.get("depth_error_median_k", 10.0)),
+            prune_opacity_threshold=float(refine_cfg.get("prune_opacity_threshold", 0.1)),
+            new_gaussian_scale_max=float(refine_cfg.get("new_gaussian_scale_max", 0.02)),
+        )
         ply_path = self.checkpoint_path / \
             f"{self.config['data']['scene_name']}_global_splats.ply"
         refined_merged_gaussian_model.save_ply(ply_path)
@@ -534,23 +544,23 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        try:
-            self.run_trajectory_eval()
-        except Exception:
-            print("Could not run trajectory eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_trajectory_eval()
+        # except Exception:
+        #     print("Could not run trajectory eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_rendering_eval()
-        except Exception:
-            print("Could not run rendering eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_rendering_eval()
+        # except Exception:
+        #     print("Could not run rendering eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_reconstruction_eval()
-        except Exception:
-            print("Could not run reconstruction eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_reconstruction_eval()
+        # except Exception:
+        #     print("Could not run reconstruction eval")
+        #     traceback.print_exc()
 
         try:
             self.run_global_map_eval()

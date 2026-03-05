@@ -391,17 +391,23 @@ def _prune_gaussians(
     gaussian_model: GaussianModel,
     prune_opacity_threshold: float,
     max_scale_ratio_to_mode: float,
+    max_distance_from_origin: float = None,
 ) -> int:
-    """Prune low-opacity points and optionally oversized Gaussians. No add. Returns total number removed."""
+    """Prune low-opacity, oversized, and too-far Gaussians. No add. Returns total number removed."""
     with torch.no_grad():
         n_before = gaussian_model.get_size()
         prune_mask = (gaussian_model.get_opacity() < prune_opacity_threshold).squeeze()
         n_valid = (~prune_mask).sum().item()
-        n_prune_low = prune_mask.sum().item()
         if n_valid > 0:
             gaussian_model.prune_points(prune_mask)
         if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
             prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode, verbose=False)
+        if max_distance_from_origin is not None and max_distance_from_origin > 0:
+            xyz = gaussian_model.get_xyz()
+            dist = torch.sqrt((xyz ** 2).sum(dim=1))
+            far_mask = dist > max_distance_from_origin
+            if far_mask.any():
+                gaussian_model.prune_points(far_mask)
         n_after = gaussian_model.get_size()
         n_removed = n_before - n_after
         if n_removed > 0:
@@ -422,6 +428,7 @@ def _add_gaussians_from_frame(
     add_depth_valid_for_error_min: float,
     add_silhouette_threshold: float,
     add_norm_mag_threshold: float,
+    max_distance_from_origin: float = None,
 ) -> int:
     """Add new Gaussians from current frame (alpha/depth/normal mask). Returns number added."""
     with torch.no_grad():
@@ -448,6 +455,13 @@ def _add_gaussians_from_frame(
         w2c = est_w2c.squeeze().float().cuda()
         new_pt_cld, mean3_sq_dist = backproject_frame_to_pointcloud(
             gt_color_add, gt_d, w2c, fx, fy, cx, cy, non_presence_mask, device="cuda")
+        if new_pt_cld.shape[0] == 0:
+            return 0
+        if max_distance_from_origin is not None and max_distance_from_origin > 0:
+            dist = torch.sqrt((new_pt_cld[:, :3] ** 2).sum(dim=1))
+            keep = dist <= max_distance_from_origin
+            new_pt_cld = new_pt_cld[keep]
+            mean3_sq_dist = mean3_sq_dist[keep]
         if new_pt_cld.shape[0] == 0:
             return 0
         if new_pt_cld.shape[0] > add_gaussians_max_points:
@@ -491,6 +505,7 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                       add_depth_valid_for_error_min: float = 0.05,
                       add_silhouette_threshold: float = 0.6,
                       add_norm_mag_threshold: float = 0.9,
+                      max_distance_from_origin: float = 15.0,
                       refine_mode: str = "shuffle",
                       per_frame_iters: int = 100,
                       prune_add_interval: int = 20,
@@ -524,6 +539,8 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
 
     if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
         prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode)
+    if max_distance_from_origin is not None and max_distance_from_origin > 0:
+        _prune_gaussians(gaussian_model, 0.0, None, max_distance_from_origin=max_distance_from_origin)
 
     print(f"[refine] 初始共 {gaussian_model.get_size()} 个高斯")
     do_vis = refine_vis_interval > 0
@@ -568,7 +585,7 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                             )
                             _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_{frame_idx}_{inner_iter}")
                 if inner_iter > 0 and inner_iter % prune_add_interval == 0:
-                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode)
+                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
                     # 最后一次迭代只修剪不添加，避免新加高斯没有后续优化
                     if has_intrinsics and inner_iter < per_frame_iters - 1:
                         n_added = _add_gaussians_from_frame(
@@ -576,6 +593,7 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                             fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
                             add_valid_depth_min, add_depth_valid_for_error_min,
                             add_silhouette_threshold, add_norm_mag_threshold,
+                            max_distance_from_origin,
                         )
                         if n_added > 0:
                             print(f"  [refine] 新增 {n_added} 个高斯，当前共 {gaussian_model.get_size()} 个")
@@ -613,14 +631,15 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                                 add_silhouette_threshold, add_norm_mag_threshold,
                             )
                             _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_iter{iteration}")
-                if iteration > 0 and iteration % 500 == 0:
-                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode)
+                if iteration > 0 and iteration % 100 == 0:
+                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
                 if do_add_gaussians and iteration > 0 and iteration % add_gaussians_every == 0:
                     n_added = _add_gaussians_from_frame(
                         gaussian_model, render_dict, training_frame, est_w2c,
                         fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
                         add_valid_depth_min, add_depth_valid_for_error_min,
                         add_silhouette_threshold, add_norm_mag_threshold,
+                        max_distance_from_origin,
                     )
                     if n_added > 0:
                         print(f"  [refine] 新增 {n_added} 个高斯，当前共 {gaussian_model.get_size()} 个")

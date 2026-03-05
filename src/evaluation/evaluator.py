@@ -435,7 +435,7 @@ class Evaluator(object):
         prune_add_interval = int(refine_cfg.get("prune_add_interval", 20))
 
         refined_merged_gaussian_model = refine_global_map(
-            merged_cloud, training_frames, max_iterations=9000, export_refine_mesh=False,
+            merged_cloud, training_frames, max_iterations=3000, export_refine_mesh=False,
             output_dir=self.checkpoint_path, len_frames=len_frames,
             o3d_intrinsic=intrinsic,
             add_gaussians_every=add_gaussians_every,
@@ -449,6 +449,7 @@ class Evaluator(object):
             add_depth_valid_for_error_min=float(refine_cfg.get("add_depth_valid_for_error_min", 0.05)),
             add_silhouette_threshold=float(refine_cfg.get("add_silhouette_threshold", 0.6)),
             add_norm_mag_threshold=float(refine_cfg.get("add_norm_mag_threshold", 0.9)),
+            max_distance_from_origin=float(refine_cfg.get("max_distance_from_origin", 15.0)),
             refine_mode=refine_mode,
             per_frame_iters=per_frame_iters,
             prune_add_interval=prune_add_interval,
@@ -566,23 +567,23 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        try:
-            self.run_trajectory_eval()
-        except Exception:
-            print("Could not run trajectory eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_trajectory_eval()
+        # except Exception:
+        #     print("Could not run trajectory eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_rendering_eval()
-        except Exception:
-            print("Could not run rendering eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_rendering_eval()
+        # except Exception:
+        #     print("Could not run rendering eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_reconstruction_eval()
-        except Exception:
-            print("Could not run reconstruction eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_reconstruction_eval()
+        # except Exception:
+        #     print("Could not run reconstruction eval")
+        #     traceback.print_exc()
 
         try:
             self.run_global_map_eval()

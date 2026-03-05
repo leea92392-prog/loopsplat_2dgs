@@ -167,14 +167,23 @@ def show_render_result(gt_rgb=None, gt_depth=None,est_depth=None,est_depth_scale
         cv2.imshow("gt_normal", gt_rgb_norms)
     if render_alpha is not None:
         alpha_show = render_alpha.detach().cpu().numpy()
-        alpha_show = alpha_show/np.max(alpha_show)
-        alpha_show = (alpha_show*255).astype(np.uint8)
+        alpha_show = alpha_show / (np.max(alpha_show) + 1e-8)
+        alpha_show = (alpha_show * 255).astype(np.uint8)
         alpha_show = np.squeeze(alpha_show)
         cv2.imshow("render_alpha", alpha_show)
-    if save_id is not None:
-        cv2.imwrite(os.path.join(save_path, f"gt_rgb_{save_id}.png"), gt_image_show)
-        cv2.imwrite(os.path.join(save_path, f"render_depth_{save_id}.png"), render_depth_color_map)
-        cv2.imwrite(os.path.join(save_path, f"gt_depth_{save_id}.png"), gt_depth_color_map)
-        cv2.imwrite(os.path.join(save_path, f"render_norm_{save_id}.png"), rgb_norms)
+    if save_id is not None and save_path is not None:
+        os.makedirs(save_path, exist_ok=True)
+        if gt_rgb is not None:
+            cv2.imwrite(os.path.join(save_path, f"gt_rgb_{save_id}.png"), gt_image_show)
+        if gt_depth is not None:
+            cv2.imwrite(os.path.join(save_path, f"gt_depth_{save_id}.png"), gt_depth_color_map)
+        if render_rgb is not None:
+            cv2.imwrite(os.path.join(save_path, f"render_rgb_{save_id}.png"), image_show)
+        if render_depth is not None:
+            cv2.imwrite(os.path.join(save_path, f"render_depth_{save_id}.png"), render_depth_color_map)
+        if render_normal is not None:
+            cv2.imwrite(os.path.join(save_path, f"render_norm_{save_id}.png"), rgb_norms)
+        if render_alpha is not None:
+            cv2.imwrite(os.path.join(save_path, f"render_alpha_{save_id}.png"), alpha_show)
     cv2.waitKey(1)
     return

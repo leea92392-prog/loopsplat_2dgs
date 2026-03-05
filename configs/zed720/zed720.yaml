@@ -3,14 +3,14 @@ dataset_name: "zed720"
 checkpoint_path: null
 use_wandb: False
 frame_limit: -1 # for debugging, set to -1 to disable
-desired_height: 720
-desired_width: 1280
+desired_height: 360
+desired_width: 640
 seed: 0
 mapping:
   new_submap_every: 80
   map_every: 1
-  iterations: 100
-  new_submap_iterations: 150
+  iterations: 150
+  new_submap_iterations: 200
   new_submap_points_num: -1 
   new_submap_gradient_points_num: 60000 
   new_frame_sample_size: -1
@@ -27,7 +27,7 @@ mapping:
   use_outlier_removal: true
   outlier_nb_neighbors: 20
   outlier_std_ratio: 2.0
-  depth_error_mask_multiplier: 30
+  depth_error_mask_multiplier: 150
 tracking:
   use_pose_utils: true 
   pose_utils:  
@@ -57,6 +57,26 @@ tracking:
 cam:
   crop_edge: 0
   depth_scale: 1000.0
+# 全局图 refine：sequential_per_frame=按关键帧顺序，每帧迭代 per_frame_iters 次，每 prune_add_interval 次做一次 prune+add
+refine_global_map:
+  refine_mode: "sequential_per_frame"  # "shuffle" | "sequential_per_frame"
+  per_frame_iters: 1000    # 每个关键帧内层迭代次数（仅 sequential_per_frame）
+  prune_add_interval: 100  # 每 N 次内层迭代做一次删点+加点（仅 sequential_per_frame）
+  add_gaussians_every: 500
+  add_gaussians_max_points: 20000
+  depth_error_median_k: 10000
+  prune_opacity_threshold: 0.01
+  max_scale_ratio_to_mode: -10.0   # 修剪：scale > 该倍数*mode(scale) 的高斯被剪掉，0 或负表示不按 scale 剪
+  new_gaussian_scale_max: 0.02
+  # 加点条件阈值（与 _add_gaussians_from_frame 一致）
+  add_valid_depth_min: 0.1           # 深度 > 此值才参与加点
+  add_depth_valid_for_error_min: 0.05  # 深度 > 此值才参与深度误差计算
+  add_silhouette_threshold: 0.6      # alpha < 此值视为“缺失”，可加点
+  add_norm_mag_threshold: 0.6        # norm_mag < 此值视为法线弱，可加点
+  refine_vis_interval: 50   # 每 N 次迭代可视化一次（0=关闭），会弹窗并保存到 output/refine_vis/
+  refine_vis_save: false    # 是否保存可视化图像
+  refine_vis_interactive: false  # 是否弹出两个互动窗口（像素指标 / 修剪点，按 q 继续）
+
 lc: 
   merge_radius: 0.01
   min_similarity: 0.5

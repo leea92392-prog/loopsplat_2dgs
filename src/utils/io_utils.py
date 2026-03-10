@@ -56,7 +56,7 @@ def save_dict_to_yaml(dictionary, file_name: str, *, directory: Union[str, Path]
         file_name: The name of the YAML file.
         directory: The directory where the YAML file will be saved.
     """
-    with open(directory / file_name, "w") as f:
+    with open(directory / file_name, "w", encoding="utf-8") as f:
         yaml.dump(dictionary, f)
 
 
@@ -89,14 +89,14 @@ def load_config(path: str, default_path: str = None) -> dict:
         A dictionary containing the merged configuration.
     """
     # load configuration from per scene/dataset cfg.
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8') as f:
         cfg_special = yaml.full_load(f)
     inherit_from = cfg_special.get('inherit_from')
     cfg = dict()
     if inherit_from is not None:
         cfg = load_config(inherit_from, default_path)
     elif default_path is not None:
-        with open(default_path, 'r') as f:
+        with open(default_path, 'r', encoding='utf-8') as f:
             cfg = yaml.full_load(f)
     update_recursive(cfg, cfg_special)
     return cfg
@@ -142,7 +142,7 @@ def log_metrics_to_wandb(json_files: list, output_path: str, section: str = "Eva
     for json_file in json_files:
         file_path = os.path.join(output_path, json_file)
         if os.path.exists(file_path):
-            with open(file_path, 'r') as file:
+            with open(file_path, 'r', encoding='utf-8') as file:
                 metrics = json.load(file)
             prefixed_metrics = {
                 f"{section}/{key}": value for key, value in metrics.items()}

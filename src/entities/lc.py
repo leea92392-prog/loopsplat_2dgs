@@ -129,9 +129,10 @@ class Loop_closure(object):
             id (int): submap id to load
         """
         submap_dict = torch.load(self.submap_paths[id], map_location=torch.device(self.device))
-        if load_gaussian==True:
-            gaussians = GaussianModel(sh_degree=0)
-            gaussians.restore_from_params(submap_dict['gaussian_params'], self.opt)
+        if load_gaussian == True:
+            isotropic = self.config.get("renderer", "2dgs") != "3dgs"
+            gaussians = GaussianModel(sh_degree=0, isotropic=isotropic)
+            gaussians.restore_from_params(submap_dict["gaussian_params"], self.opt)
         submap_cams = []
         
         for kf_id in submap_dict['submap_keyframes']:
@@ -666,7 +667,8 @@ class Loop_closure(object):
             output["transformation"] = delta
 
         elif method == "gs_reg":
-            res = gs_reg(submap_source, submap_target, self.config['lc']['registration'])
+            reg_config = {**self.config["lc"]["registration"], "renderer": self.config.get("renderer", "2dgs")}
+            res = gs_reg(submap_source, submap_target, reg_config)
             delta = res['pred_tsfm'].cpu().numpy()
             output["transformation"] = delta
             output["successful"] = res["successful"]

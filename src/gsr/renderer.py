@@ -114,7 +114,7 @@ def render(
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen).
     if mask is not None:
-        rendered_image, radii, depth, opacity = rasterizer(
+        rendered_image, radii, depth, opacity, n_touched = rasterizer(
             means3D=means3D[mask],
             means2D=means2D[mask],
             shs=shs[mask],

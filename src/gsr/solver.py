@@ -252,13 +252,14 @@ class CustomPipeline:
     compute_cov3D_python = False
     debug = False
 #参数gaussians是待变换的高斯参数，这里的目的就是求一个变换矩阵，使得变换后的高斯参数在viewpoint_localizer下渲染的误差最小
-def viewpoint_localizer(viewpoint, gaussians, base_lr: float=1e-3):
+def viewpoint_localizer(viewpoint, gaussians, base_lr: float = 1e-3, renderer_type: str = "2dgs"):
     """Localize a single viewpoint in a 3DGS
 
     Args:
         viewpoint (Camera): Camera instance
         gaussians (Gaussians): 3D Gaussians to locate the viewpoint
         base_lr (float, optional). Defaults to 1e-3.
+        renderer_type (str): "2dgs" or "3dgs".
 
     Returns:
         _type_: _description_
@@ -267,10 +268,11 @@ def viewpoint_localizer(viewpoint, gaussians, base_lr: float=1e-3):
     pipe = CustomPipeline()
     bg_color = torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda", requires_grad=False)
     config = {
-        'Training': {
-            'monocular': False,
+        "renderer": renderer_type,
+        "Training": {
+            "monocular": False,
             "rgb_boundary_threshold": 0.01,
-        }
+        },
     }
 
     init_T = viewpoint.get_T.detach()
@@ -315,11 +317,11 @@ def viewpoint_localizer(viewpoint, gaussians, base_lr: float=1e-3):
         intrinsics = viewpoint.intrinsics  # 需要确保viewpoint有intrinsics属性  
         w = viewpoint.image_width  
         h = viewpoint.image_height 
-        # 获取渲染设置  
-        render_settings, est_w2c = get_render_settings(w, h, intrinsics, w2c.cpu().numpy())  
-        
-        # 渲染  
-        render_pkg = render_gaussian_model(gaussians, render_settings, est_w2c)  
+        # 获取渲染设置
+        rtype = config.get("renderer", "2dgs")
+        render_settings, est_w2c = get_render_settings(w, h, intrinsics, w2c.cpu().numpy(), renderer_type=rtype)
+        # 渲染
+        render_pkg = render_gaussian_model(gaussians, render_settings, est_w2c, renderer_type=rtype)  
         image, depth, opacity = (  
             render_pkg["color"],  
             render_pkg["depth"],  
@@ -404,35 +406,39 @@ def gaussian_registration(src_dict, tgt_dict, config: dict, visualize=False):
     # per-cam
     for viewpoint in src_view_list:
         # use rendered image as target not the raw observation
-        if config["use_render"]:  
-            w2c = viewpoint.world_view_transform.T  
-            render_settings, est_w2c = get_render_settings(  
-            viewpoint.image_width, viewpoint.image_height,   
-            viewpoint.intrinsics, w2c.cpu().numpy())  
-            render_pkg = render_gaussian_model(src_3dgs, render_settings, est_w2c)  
-            viewpoint.load_rgb(render_pkg['color'].detach())  
-            viewpoint.depth = render_pkg['depth'].squeeze().detach().cpu().numpy()
+        if config["use_render"]:
+            w2c = viewpoint.world_view_transform.T
+            rtype = config.get("renderer", "2dgs")
+            render_settings, est_w2c = get_render_settings(
+                viewpoint.image_width, viewpoint.image_height,
+                viewpoint.intrinsics, w2c.cpu().numpy(), renderer_type=rtype)
+            render_pkg = render_gaussian_model(src_3dgs, render_settings, est_w2c, renderer_type=rtype)
+            viewpoint.load_rgb(render_pkg["color"].detach())
+            viewpoint.depth = render_pkg["depth"].squeeze().detach().cpu().numpy()
         else:
             viewpoint.load_rgb()
-        #执行高斯点云配准优化，把tgt_3dgs中的高斯点云进行变换，使得在选中的视角viewpoint_localizer下，渲染的误差最小（指由src_3dgs渲染和变换后的tgt_3dgs渲染）
-        converged, pred_tsfm, residual, loss_log = viewpoint_localizer(viewpoint, tgt_3dgs, config["base_lr"])
+        #执行高斯点云配准优化
+        converged, pred_tsfm, residual, loss_log = viewpoint_localizer(
+            viewpoint, tgt_3dgs, config["base_lr"], renderer_type=config.get("renderer", "2dgs"))
         pred_list.append(pred_tsfm)
         residual_list.append(residual)
         converged_list.append(converged)
         loss_log_list.append(loss_log)
     
     for viewpoint in tgt_view_list:
-        if config["use_render"]:  
-            w2c = viewpoint.world_view_transform.T  
-            render_settings, est_w2c = get_render_settings(  
-            viewpoint.image_width, viewpoint.image_height,   
-            viewpoint.intrinsics, w2c.cpu().numpy())  
-            render_pkg = render_gaussian_model(src_3dgs, render_settings, est_w2c)  
-            viewpoint.load_rgb(render_pkg['color'].detach())  
-            viewpoint.depth = render_pkg['depth'].squeeze().detach().cpu().numpy()
+        if config["use_render"]:
+            w2c = viewpoint.world_view_transform.T
+            rtype = config.get("renderer", "2dgs")
+            render_settings, est_w2c = get_render_settings(
+                viewpoint.image_width, viewpoint.image_height,
+                viewpoint.intrinsics, w2c.cpu().numpy(), renderer_type=rtype)
+            render_pkg = render_gaussian_model(src_3dgs, render_settings, est_w2c, renderer_type=rtype)
+            viewpoint.load_rgb(render_pkg["color"].detach())
+            viewpoint.depth = render_pkg["depth"].squeeze().detach().cpu().numpy()
         else:
             viewpoint.load_rgb()
-        converged, pred_tsfm, residual, loss_log = viewpoint_localizer(viewpoint, src_3dgs, config["base_lr"])
+        converged, pred_tsfm, residual, loss_log = viewpoint_localizer(
+            viewpoint, src_3dgs, config["base_lr"], renderer_type=config.get("renderer", "2dgs"))
         pred_list.append(pred_tsfm.inverse())
         residual_list.append(residual)
         converged_list.append(converged)

@@ -70,6 +70,9 @@ class GaussianSLAM(object):
             self.rot_thre = 50
             self.trans_thre = 0.5
         self.logger = Logger(self.output_path, config["use_wandb"])
+        renderer_type = config.get("renderer", "2dgs")
+        config["mapping"]["renderer"] = renderer_type
+        config["tracking"]["renderer"] = renderer_type
         self.mapper = Mapper(config["mapping"], self.dataset, self.logger)
         self.tracker = Tracker(config["tracking"], self.dataset, self.logger)
         self.enable_exposure = self.tracker.enable_exposure
@@ -147,7 +150,8 @@ class GaussianSLAM(object):
             A new, reset GaussianModel instance for the new submap.
         """
         
-        gaussian_model = GaussianModel(0)
+        isotropic = self.config.get("renderer", "2dgs") != "3dgs"
+        gaussian_model = GaussianModel(0, isotropic=isotropic)
         gaussian_model.training_setup(self.opt)
         self.mapper.keyframes = []
         self.keyframes_info = {}
@@ -227,7 +231,8 @@ class GaussianSLAM(object):
         """ Starts the main program flow for Gaussian-SLAM, including tracking and mapping. """
         setup_seed(self.config["seed"])
         #默认第一个创建子图
-        gaussian_model = GaussianModel(0)#0阶球谐函数
+        isotropic = self.config.get("renderer", "2dgs") != "3dgs"
+        gaussian_model = GaussianModel(0, isotropic=isotropic)  # 0阶球谐函数
         gaussian_model.training_setup(self.opt)
         self.submap_id = 0
 

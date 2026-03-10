@@ -7,3 +7,6 @@
 [submodule "thirdparty/graphdecoviewer"]
 	path = thirdparty/graphdecoviewer
 	url = git@github.com:graphdeco-inria/graphdecoviewer.git
+[submodule "thirdparty/diff-gaussian-rasterization-w-pose"]
+	path = thirdparty/diff-gaussian-rasterization-w-pose
+	url = https://github.com/rmurai0610/diff-gaussian-rasterization-w-pose.git

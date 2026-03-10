@@ -16,12 +16,13 @@ if __name__ == "__main__":
     #args.checkpoint_path = "/home/lee/A-LOAM-Container/LoopSplat_2dgs/output/TUM_RGBD/rgbd_dataset_freiburg1_desk_ablation_1_loop"
     #args.checkpoint_path = "/home/lee/A-LOAM-Container/LoopSplat_2dgs/output/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household_final_loop_record2"
     #args.checkpoint_path = "/home/lee/A-LOAM-Container/LoopSplat_2dgs/output/TUM_RGBD/rgbd_dataset_freiburg1_desk_depthlab"
-    #args.checkpoint_path = "output/zed720/work_desk_trackingtest_improvetest_01"
-    
+    # args.checkpoint_path = "output/zed720/work_desk_trackingtest_improvetest_01"
+    #args.checkpoint_path = "output/Replica/office0"
+    args.checkpoint_path = "output_3dgs/TUM_RGBD/rgbd_dataset_freiburg1_desk"
     #args.checkpoint_path = "/home/lee/A-LOAM-Container/LoopSplat_2dgs/output/UTMM/ego-centric-1_loop"
     # args.checkpoint_path = "/home/wujie/ws_0122/loopsplat_2dgs/output/TUM_RGBD/rgbd_dataset_freiburg1_desk_mini_ba_with_render-pose_opt"
     #args.checkpoint_path = "/home/wujie/ws_0122/loopsplat_2dgs/output/zed720/work_desk_trackingtest_improve"
-    args.checkpoint_path = "output/TUM_RGBD/rgbd_dataset_freiburg1_desk_mini_ba_with_render-pose_opt"
+    #args.checkpoint_path = "output_miniba/TUM_RGBD/rgbd_dataset_freiburg3_long_office_household—improve_loop2"
     
     if args.config_path == "":
         args.config_path = Path(args.checkpoint_path) / "config.yaml"

@@ -67,7 +67,8 @@ class Mapper(object):
             seeding_mask = geometric_edge_mask(color_for_mask, RGB=True)
         #如果不是新的子图，就用alpha掩模和深度误差掩模
         else:
-            render_dict = render_gaussian_model(gaussian_model, keyframe["render_settings"],keyframe["est_w2c"])
+            renderer_type = self.config.get("renderer", "2dgs")
+            render_dict = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"], renderer_type=renderer_type)
             alpha_mask = (render_dict["alpha"] < self.alpha_thre)
             gt_depth_tensor = keyframe["depth"][None]
             depth_error = torch.abs(gt_depth_tensor - render_dict["depth"]) * (gt_depth_tensor > 0)
@@ -145,7 +146,8 @@ class Mapper(object):
             keyframe_id = np.random.choice(np.arange(len(keyframes)), p=distribution)
 
             frame_id, keyframe = keyframes[keyframe_id]
-            render_pkg = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"])
+            renderer_type = self.config.get("renderer", "2dgs")
+            render_pkg = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"], renderer_type=renderer_type)
 
             image, depth = render_pkg["color"], render_pkg["depth"]
             silhouette = render_pkg["alpha"]
@@ -171,18 +173,26 @@ class Mapper(object):
             depth_loss = l1_loss(depth[:, mask], gt_depth[mask])
             #正则化损失
             reg_loss = isotropic_loss(gaussian_model.get_scaling())
-            rend_dist = render_pkg["rend_dist"]
-            dist_loss = 1000*rend_dist.mean()
-            rend_normal  = render_pkg['rend_normal']
-            surf_normal = render_pkg['normal']
-            normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-            normal_loss = 0.05*(normal_error).mean()
             total_loss = color_loss + depth_loss + reg_loss
-            #print("color_loss:",color_loss.item(),"depth_loss:",depth_loss.item(),"isotropic_loss:",reg_loss.item(),"dist_loss:",dist_loss.item(),"normal_loss",normal_loss.item())
-            if self.config['use_normal_reg']:
-                total_loss +=   normal_loss
-            if self.config['use_dist_reg']:
-                total_loss +=dist_loss
+            if renderer_type != "3dgs":
+                rend_dist = render_pkg["rend_dist"]
+                dist_loss = 1000 * rend_dist.mean()
+                rend_normal = render_pkg["rend_normal"]
+                surf_normal = render_pkg["normal"]
+                normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+                normal_loss = 0.05 * (normal_error).mean()
+                if self.config.get("use_normal_reg", True):
+                    total_loss += normal_loss
+                if self.config.get("use_dist_reg", True):
+                    total_loss += dist_loss
+            # #region agent log
+            try:
+                with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-a3aa7f.log", "a") as _f:
+                    _s = gaussian_model._scaling.shape
+                    _f.write(__import__("json").dumps({"hypothesisId": "H1", "location": "mapper.py:optimize_submap", "message": "before backward", "data": {"renderer_type": renderer_type, "isotropic": getattr(gaussian_model, "isotropic", None), "_scaling_shape": list(_s), "scale_cols": _s[1] if _s.numel() else 0}, "timestamp": __import__("time").time()}) + "\n")
+            except Exception:
+                pass
+            # #endregion
             total_loss.backward()
 
             losses_dict[frame_id] = {"color_loss": color_loss.item(),
@@ -369,17 +379,21 @@ class Mapper(object):
             non_presence_mask = torch.from_numpy(non_presence_mask).to(device=gt_depth.device)
         # 添加新观察到的点
         else:
-            result = render_gaussian_model(gaussian_model, keyframe["render_settings"],keyframe["est_w2c"])
-            silhouette = result["alpha"] 
+            renderer_type = self.config.get("renderer", "2dgs")
+            result = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"], renderer_type=renderer_type)
+            silhouette = result["alpha"]
             non_presence_sil_mask = silhouette < 0.6
             #深度误差掩模
             render_depth = result["depth"]
             depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0.05)
             non_presence_depth_mask = depth_error > 10 * depth_error.median()
-            #法向量掩模
-            surf_norm = result["normal"]
-            norm_magnitude = torch.sqrt(torch.sum(surf_norm ** 2, dim=0))
-            norm_mask = norm_magnitude < 0.9
+            #法向量掩模（3DGS 无 normal，仅用 sil/depth）
+            surf_norm = result.get("normal")
+            if surf_norm is not None:
+                norm_magnitude = torch.sqrt(torch.sum(surf_norm ** 2, dim=0))
+                norm_mask = norm_magnitude < 0.9
+            else:
+                norm_mask = torch.zeros_like(non_presence_sil_mask, dtype=torch.bool)
             # Determine non-presence mask
             non_presence_mask = non_presence_sil_mask | non_presence_depth_mask | norm_mask
             non_presence_mask = non_presence_mask.reshape(-1)
@@ -424,7 +438,16 @@ class Mapper(object):
             (new_pt_cld.shape[0], 1), dtype=torch.float, device="cuda"
         )
         # Spherical pixel-wide scaling
-        new_scaling = torch.log(torch.sqrt(mean3_sq_dist))[..., None].repeat(1, 2)
+        # #region agent log
+        try:
+            _scale_cols = 3 if self.config.get("renderer", "2dgs") == "3dgs" else 2
+            with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-a3aa7f.log", "a") as _f:
+                _f.write(__import__("json").dumps({"hypothesisId": "H3", "location": "mapper.py:grow_submap", "message": "new_scaling cols", "data": {"renderer": self.config.get("renderer", "2dgs"), "scale_cols_used": _scale_cols}, "timestamp": __import__("time").time()}) + "\n")
+        except Exception:
+            pass
+        _scale_cols = 3 if self.config.get("renderer", "2dgs") == "3dgs" else 2
+        # #endregion
+        new_scaling = torch.log(torch.sqrt(mean3_sq_dist))[..., None].repeat(1, _scale_cols)
         gaussian_model.densification_postfix(
             new_xyz=new_pt_cld[:, :3],
             new_features_dc=new_features[:, :, 0:1].transpose(1, 2).contiguous(),
@@ -525,8 +548,9 @@ class Mapper(object):
         estimate_w2c = np.linalg.inv(estimate_c2w)
         #将图像转换为张量
         color_transform = torchvision.transforms.ToTensor()
-        render_settings,est_w2c=get_render_settings(
-                self.dataset.width, self.dataset.height, self.dataset.intrinsics, estimate_w2c)
+        renderer_type = self.config.get("renderer", "2dgs")
+        render_settings, est_w2c = get_render_settings(
+                self.dataset.width, self.dataset.height, self.dataset.intrinsics, estimate_w2c, renderer_type=renderer_type)
         keyframe = {
             "color": color_transform(gt_color).cuda(),
             "depth": np2torch(gt_depth, device="cuda"),
@@ -557,7 +581,8 @@ class Mapper(object):
 
         # Visualise the mapping for the current frame
         with torch.no_grad():
-            render_pkg_vis = render_gaussian_model(gaussian_model, keyframe["render_settings"],keyframe["est_w2c"])
+            renderer_type = self.config.get("renderer", "2dgs")
+            render_pkg_vis = render_gaussian_model(gaussian_model, keyframe["render_settings"], keyframe["est_w2c"], renderer_type=renderer_type)
             image_vis, depth_vis = render_pkg_vis["color"], render_pkg_vis["depth"]
             if keyframe["exposure_ab"] is not None:
                 image_vis = torch.clamp(image_vis * torch.exp(keyframe["exposure_ab"][0]) + keyframe["exposure_ab"][1], 0, 1.)

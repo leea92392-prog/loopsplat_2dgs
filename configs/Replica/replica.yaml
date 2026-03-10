@@ -1,14 +1,15 @@
 project_name: "LoopSplat_SLAM_replica"
 dataset_name: "replica"
+renderer: "2dgs"  # "2dgs" | "3dgs"
 checkpoint_path: null
-use_wandb: True
+use_wandb: False
 frame_limit: -1 # for debugging, set to -1 to disable
 seed: 1
 mapping:
   new_submap_every: 50
   map_every: 5
   iterations: 100
-  new_submap_iterations: 600
+  new_submap_iterations: 200
   new_submap_points_num: 600000 
   new_submap_gradient_points_num: 50000 
   new_frame_sample_size: -1 
@@ -17,11 +18,29 @@ mapping:
   alpha_thre: 0.6
   pruning_thre: 0.1 
   submap_using_motion_heuristic: True
+  use_normal_reg: true
+  use_dist_reg: true
+  use_depth_filter: true
+  depth_filter_kernel_size: 5
+  depth_filter_threshold: 0.05
+  use_outlier_removal: false
+  outlier_nb_neighbors: 20
+  outlier_std_ratio: 2.0
+  depth_error_mask_multiplier: 150
 tracking:
   gt_camera: False
+  use_pose_utils: true 
+  pose_utils:  
+    fundmat_samples: 2000  
+    max_error: 1.0         
+    top_k: 1500
+    num_pts_miniba_incr: 1500  
+    min_num_inliers: 30  
+    pnpransac_samples: 1000  
+    iters_miniba_incr: 200  
   use_imu: false
   w_color_loss: 0.95
-  iterations: 80
+  iterations: 60
   cam_rot_lr: 0.0002
   cam_trans_lr: 0.002
   odometry_type: "const_speed"  # gt, const_speed, odometer
@@ -54,3 +73,20 @@ lc:
     use_render: False
   min_interval: 2
   final: False
+refine_global_map:
+  refine_mode: "shuffle"  # "shuffle" | "sequential_per_frame"
+  per_frame_iters: 1000    # 每个关键帧内层迭代次数（仅 sequential_per_frame）
+  prune_add_interval: 100  # 每 N 次内层迭代做一次删点+加点（仅 sequential_per_frame）
+  add_gaussians_every: 500
+  add_gaussians_max_points: 20000
+  depth_error_median_k: 10000
+  prune_opacity_threshold: 0.01
+  max_scale_ratio_to_mode: -10.0   # 修剪：scale > 该倍数*mode(scale) 的高斯被剪掉，0 或负表示不按 scale 剪
+  new_gaussian_scale_max: 0.02
+  add_valid_depth_min: 0.1           # 深度 > 此值才参与加点
+  add_depth_valid_for_error_min: 0.05  # 深度 > 此值才参与深度误差计算
+  add_silhouette_threshold: 0.6      # alpha < 此值视为“缺失”，可加点
+  add_norm_mag_threshold: 0.6        # norm_mag < 此值视为法线弱，可加点
+  refine_vis_interval: 50   # 每 N 次迭代可视化一次（0=关闭），会弹窗并保存到 output/refine_vis/
+  refine_vis_save: false    # 是否保存可视化图像
+  refine_vis_interactive: false  # 是否弹出两个互动窗口（像素指标 / 修剪点，按 q 继续）

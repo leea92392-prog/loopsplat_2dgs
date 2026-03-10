@@ -1,0 +1,6 @@
+# Base config for TUM RGB-D when using 3DGS renderer. Use via: inherit_from: configs/TUM_RGBD/tum_rgbd_3dgs.yaml
+inherit_from: configs/TUM_RGBD/tum_rgbd.yaml
+renderer: "3dgs"
+mapping:
+  use_normal_reg: false
+  use_dist_reg: false

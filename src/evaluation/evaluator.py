@@ -85,9 +85,10 @@ class Evaluator(object):
 
         submaps_paths = sorted(
             list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        isotropic = self.config.get("renderer", "2dgs") != "3dgs"
         for submap_path in tqdm(submaps_paths):
             submap = torch.load(submap_path, map_location=self.device)
-            gaussian_model = GaussianModel()
+            gaussian_model = GaussianModel(sh_degree=0, isotropic=isotropic)
             gaussian_model.training_setup(opt_settings)
             gaussian_model.restore_from_params(
                 submap["gaussian_params"], opt_settings)
@@ -100,14 +101,14 @@ class Evaluator(object):
 
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
-                render_settings,est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
+                renderer_type = self.config.get("renderer", "2dgs")
+                render_settings, est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c, renderer_type=renderer_type)
                 #计算真实深度图的法向量图
-                gt_normal = depth_to_normal(render_settings,gt_depth.unsqueeze(0))
-                
+                gt_normal = depth_to_normal(render_settings, gt_depth.unsqueeze(0))
                 render_dict = render_gaussian_model(
-                    gaussian_model, render_settings, est_w2c)
+                    gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
                 show_render_result(render_rgb=render_dict["color"], render_depth=render_dict["depth"],
-                               gt_depth=gt_depth,gt_rgb=gt_color,render_normal=render_dict["normal"],gt_normal=gt_normal,
+                               gt_depth=gt_depth, gt_rgb=gt_color, render_normal=render_dict.get("normal"), gt_normal=gt_normal,
                                save_id=keyframe_id,save_path=self.render_path)
                 rendered_color, rendered_depth = render_dict["color"].detach(
                 ), render_dict["depth"][0].detach()
@@ -176,9 +177,10 @@ class Evaluator(object):
             color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
         trajectory_points = []
         submaps_paths = sorted(list((self.checkpoint_path / "submaps").glob('*.ckpt')))
+        isotropic = self.config.get("renderer", "2dgs") != "3dgs"
         for submap_path in tqdm(submaps_paths):
             submap = torch.load(submap_path, map_location=self.device)
-            gaussian_model = GaussianModel()
+            gaussian_model = GaussianModel(sh_degree=0, isotropic=isotropic)
             gaussian_model.training_setup(opt_settings)
             gaussian_model.restore_from_params(
                 submap["gaussian_params"], opt_settings)
@@ -186,9 +188,10 @@ class Evaluator(object):
             for keyframe_id in submap["submap_keyframes"]:
                 estimate_c2w = self.estimated_c2w[keyframe_id]
                 estimate_w2c = np.linalg.inv(estimate_c2w)
-                render_settings,est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
+                renderer_type = self.config.get("renderer", "2dgs")
+                render_settings, est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c, renderer_type=renderer_type)
                 render_dict = render_gaussian_model(
-                    gaussian_model, render_settings, est_w2c)
+                    gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
                 rendered_color, rendered_depth = render_dict["color"].detach(
                 ), render_dict["depth"][0].detach()
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
@@ -411,7 +414,7 @@ class Evaluator(object):
         print("Running global map evaluation...")
 
         render_frames_dataset = RenderFrames(
-            self.dataset, self.estimated_c2w, self.height, self.width, self.fx, self.fy, self.exposures_ab)
+            self.dataset, self.estimated_c2w, self.height, self.width, self.fx, self.fy, self.exposures_ab, config=self.config)
         refine_cfg = self.config.get("refine_global_map", {})
         refine_mode = refine_cfg.get("refine_mode", "shuffle")
 
@@ -435,7 +438,7 @@ class Evaluator(object):
         prune_add_interval = int(refine_cfg.get("prune_add_interval", 20))
 
         refined_merged_gaussian_model = refine_global_map(
-            merged_cloud, training_frames, max_iterations=3000, export_refine_mesh=False,
+            merged_cloud, training_frames, max_iterations=20000, export_refine_mesh=False,
             output_dir=self.checkpoint_path, len_frames=len_frames,
             o3d_intrinsic=intrinsic,
             add_gaussians_every=add_gaussians_every,
@@ -451,6 +454,7 @@ class Evaluator(object):
             add_norm_mag_threshold=float(refine_cfg.get("add_norm_mag_threshold", 0.9)),
             max_distance_from_origin=float(refine_cfg.get("max_distance_from_origin", 15.0)),
             refine_mode=refine_mode,
+            renderer_type=self.config.get("renderer", "2dgs"),
             per_frame_iters=per_frame_iters,
             prune_add_interval=prune_add_interval,
             refine_vis_interval=int(refine_cfg.get("refine_vis_interval", 0)),
@@ -471,7 +475,7 @@ class Evaluator(object):
             eval_config["data"]["use_train_split"] = False
             test_set = get_dataset(eval_config["dataset_name"])({**eval_config["data"], **eval_config["cam"]})
             test_poses = torch.stack([torch.from_numpy(test_set[i][3]) for i in range(len(test_set))], dim=0)
-            test_frames = RenderFrames(test_set, test_poses, self.height, self.width, self.fx, self.fy)
+            test_frames = RenderFrames(test_set, test_poses, self.height, self.width, self.fx, self.fy, config=self.config)
 
             psnr_list = []
             for i in tqdm(range(len(test_set))):
@@ -479,7 +483,8 @@ class Evaluator(object):
                     test_frames[i]["color"],
                     test_frames[i]["depth"])
                 render_settings, est_w2c = test_frames[i]["render_settings"]
-                render_dict = render_gaussian_model(refined_merged_gaussian_model, render_settings, est_w2c)
+                renderer_type = self.config.get("renderer", "2dgs")
+                render_dict = render_gaussian_model(refined_merged_gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
                 rendered_color, _ = (render_dict["color"].permute(1, 2, 0), render_dict["depth"],)
                 rendered_color = torch.clip(rendered_color, 0, 1)
                 save_image(rendered_color.permute(2, 0, 1), self.checkpoint_path / f"nvs_eval/{i:04d}.jpg")
@@ -510,9 +515,10 @@ class Evaluator(object):
 
                     estimate_c2w = self.estimated_c2w[keyframe_id]
                     estimate_w2c = np.linalg.inv(estimate_c2w)
-                    render_settings, est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c)
+                    renderer_type = self.config.get("renderer", "2dgs")
+                    render_settings, est_w2c = get_render_settings(self.width, self.height, self.dataset.intrinsics, estimate_w2c, renderer_type=renderer_type)
                     render_dict = render_gaussian_model(
-                        refined_merged_gaussian_model, render_settings, est_w2c)
+                        refined_merged_gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
                     rendered_color, rendered_depth = render_dict["color"].detach(
                     ), render_dict["depth"][0].detach()
                     rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)
@@ -567,23 +573,23 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        # try:
-        #     self.run_trajectory_eval()
-        # except Exception:
-        #     print("Could not run trajectory eval")
-        #     traceback.print_exc()
+        try:
+            self.run_trajectory_eval()
+        except Exception:
+            print("Could not run trajectory eval")
+            traceback.print_exc()
 
-        # try:
-        #     self.run_rendering_eval()
-        # except Exception:
-        #     print("Could not run rendering eval")
-        #     traceback.print_exc()
+        try:
+            self.run_rendering_eval()
+        except Exception:
+            print("Could not run rendering eval")
+            traceback.print_exc()
 
-        # try:
-        #     self.run_reconstruction_eval()
-        # except Exception:
-        #     print("Could not run reconstruction eval")
-        #     traceback.print_exc()
+        try:
+            self.run_reconstruction_eval()
+        except Exception:
+            print("Could not run reconstruction eval")
+            traceback.print_exc()
 
         try:
             self.run_global_map_eval()

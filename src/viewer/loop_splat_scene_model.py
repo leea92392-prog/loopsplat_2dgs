@@ -7,8 +7,6 @@ import math
 import numpy as np
 import torch
 import yaml
-from diff_surfel_rasterization import GaussianRasterizationSettings
-
 from src.entities.gaussian_model import GaussianModel
 from src.entities.arguments import OptimizationParams
 from argparse import ArgumentParser
@@ -133,11 +131,29 @@ class LoopSplatSceneModel:
         w2c = torch.eye(4).cuda().float()
         cam_center = w2c.inverse()[3, :3]
         opengl_proj = torch.tensor([[2 * fx / width, 0.0, -(width - 2 * cx) / width, 0.0],
-                                [0.0, 2 * fy / height, -(height - 2 * cy) / height, 0.0],
-                                [0.0, 0.0, far /
-                                    (far - near), -(far * near) / (far - near)],
-                                [0.0, 0.0, 1.0, 0.0]], device='cuda').float().transpose(0, 1)
+                                    [0.0, 2 * fy / height, -(height - 2 * cy) / height, 0.0],
+                                    [0.0, 0.0, far / (far - near), -(far * near) / (far - near)],
+                                    [0.0, 0.0, 1.0, 0.0]], device="cuda").float().transpose(0, 1)
         full_proj_matrix = w2c.unsqueeze(0).bmm(opengl_proj.unsqueeze(0)).squeeze(0)
+        renderer_type = self._config.get("renderer", "2dgs")
+        if renderer_type == "3dgs":
+            from diff_gaussian_rasterization import GaussianRasterizationSettings as Settings3DGS
+            return Settings3DGS(
+                image_height=height,
+                image_width=width,
+                tanfovx=width / (2 * fx),
+                tanfovy=height / (2 * fy),
+                bg=torch.tensor([0, 0, 0], device="cuda").float(),
+                scale_modifier=scale_modifier,
+                viewmatrix=w2c,
+                projmatrix=full_proj_matrix,
+                projmatrix_raw=opengl_proj,
+                sh_degree=0,
+                campos=cam_center,
+                prefiltered=False,
+                debug=False,
+            )
+        from diff_surfel_rasterization import GaussianRasterizationSettings
         return GaussianRasterizationSettings(
             image_height=height,
             image_width=width,
@@ -164,8 +180,9 @@ class LoopSplatSceneModel:
             w2c = w2c.T
         est_w2c = w2c
         settings = self._get_render_settings(width, height, fov_x, fov_y, w2c, scaling_factor)
+        renderer_type = self._config.get("renderer", "2dgs")
         render_dict = render_gaussian_model(
-            self._gaussian_model, settings, est_w2c
+            self._gaussian_model, settings, est_w2c, renderer_type=renderer_type
         )
         color = render_dict["color"].clamp(0, 1.0)
         depth = render_dict["depth"][0:1]
@@ -240,7 +257,8 @@ class LoopSplatSceneModel:
         if submaps_dir.exists():
             submap_paths = sorted(submaps_dir.glob("*.ckpt"), key=lambda p: int(p.stem))
 
-        gaussian_model = GaussianModel(sh_degree=3)
+        isotropic = config.get("renderer", "2dgs") != "3dgs"
+        gaussian_model = GaussianModel(sh_degree=3, isotropic=isotropic)
         gaussian_model.active_sh_degree = 0
 
         use_ply = False

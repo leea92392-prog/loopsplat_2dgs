@@ -1,0 +1,6 @@
+# Base config for UTMM when using 3DGS renderer. Use via: inherit_from: configs/UTMM/UTMM_3dgs.yaml
+inherit_from: configs/UTMM/UTMM.yaml
+renderer: "3dgs"
+mapping:
+  use_normal_reg: false
+  use_dist_reg: false

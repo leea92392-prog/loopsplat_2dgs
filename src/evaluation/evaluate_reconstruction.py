@@ -236,8 +236,9 @@ def clean_mesh(mesh):
     cleaned_mesh_tri = trimesh.Trimesh(vertices=new_vertices, faces=new_faces)
     cleaned_mesh_tri.visual.vertex_colors = np.array(new_colors)
 
-    cleaned_mesh_tri.update_faces(cleaned_mesh_tri.nondegenerate_faces())
-    cleaned_mesh_tri.update_faces(cleaned_mesh_tri.unique_faces())
+    if len(cleaned_mesh_tri.faces) > 0:
+        cleaned_mesh_tri.update_faces(cleaned_mesh_tri.nondegenerate_faces())
+        cleaned_mesh_tri.update_faces(cleaned_mesh_tri.unique_faces())
     print(
         f"Mesh cleaning (before/after), vertices: {len(mesh_tri.vertices)}/{len(cleaned_mesh_tri.vertices)}, faces: {len(mesh_tri.faces)}/{len(cleaned_mesh_tri.faces)}")
 

@@ -83,6 +83,13 @@ python -m pip install -e .
 cd ../..
 ```
 
+**Optional: 3D Gaussian Splatting (3DGS) renderer.** The default renderer is 2DGS (diff-surfel-rasterization). The 3DGS backend uses the [w-pose fork](https://github.com/rmurai0610/diff-gaussian-rasterization-w-pose) (native depth/opacity and optional pose gradients). To use it, add the submodule and build (requires CUDA):
+```
+git submodule update --init thirdparty/diff-gaussian-rasterization
+./scripts/install_3dgs_rasterization.sh
+```
+Then use a 3DGS base config, e.g. `inherit_from: configs/Replica/replica_3dgs.yaml` in your scene config, or set `renderer: "3dgs"` in the YAML.
+
 We tested our code on RTX4090 and RTX A6000 GPUs respectively and Ubuntu22 and CentOS7.5.
 
 ## 🚀 Usage

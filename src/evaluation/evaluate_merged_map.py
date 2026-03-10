@@ -21,7 +21,7 @@ from src.utils.vis_utils import show_render_result
 
 class RenderFrames(Dataset):
     """A dataset class for loading keyframes along with their estimated camera poses and render settings."""
-    def __init__(self, dataset, render_poses: np.ndarray, height: int, width: int, fx: float, fy: float, exposures_ab=None):
+    def __init__(self, dataset, render_poses: np.ndarray, height: int, width: int, fx: float, fy: float, exposures_ab=None, config=None):
         self.dataset = dataset
         self.render_poses = render_poses
         self.height = height
@@ -31,6 +31,7 @@ class RenderFrames(Dataset):
         self.device = "cuda"
         self.stride = 1
         self.exposures_ab = exposures_ab
+        self.config = config
         if len(dataset) > 1000:
             self.stride = len(dataset) // 1000
 
@@ -44,12 +45,15 @@ class RenderFrames(Dataset):
         depth = torch.from_numpy(self.dataset[idx][2]).float().to(self.device)
         estimate_c2w = self.render_poses[idx]
         estimate_w2c = np.linalg.inv(estimate_c2w)
+        renderer_type = self.config.get("renderer", "2dgs") if self.config else "2dgs"
+        render_settings, est_w2c = get_render_settings(
+            self.width, self.height, self.dataset.intrinsics, estimate_w2c, renderer_type=renderer_type)
         frame = {
             "frame_id": idx,
             "color": color,
             "depth": depth,
-            "render_settings": get_render_settings(
-                self.width, self.height, self.dataset.intrinsics, estimate_w2c)
+            "render_settings": (render_settings, est_w2c),
+            "renderer_type": renderer_type,
         }
         if self.exposures_ab is not None:
             frame["exposure_ab"] = self.exposures_ab[idx]
@@ -189,7 +193,7 @@ def _vis_refine_frame(render_dict: dict, training_frame: dict, save_id: str = No
         gt_depth = gt_depth.squeeze(0)
     render_rgb = render_dict["color"]
     render_depth = render_dict["depth"]
-    render_normal = render_dict["rend_normal"]
+    render_normal = render_dict.get("rend_normal")
     render_alpha = render_dict["alpha"]
     show_render_result(
         # gt_rgb=gt_rgb,
@@ -212,8 +216,8 @@ def _compute_pixel_metrics_for_vis(render_dict: dict, training_frame: dict):
     silhouette = render_dict["alpha"].squeeze(0)
     render_depth = render_dict["depth"].squeeze(0)
     depth_error = torch.abs(gt_d - render_depth) * (gt_d > 0.05)
-    surf_norm = render_dict["normal"]
-    norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0))
+    surf_norm = render_dict.get("normal")
+    norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0)) if surf_norm is not None else torch.zeros_like(silhouette)
     return (
         silhouette.detach().cpu().numpy().astype(np.float32),
         norm_mag.detach().cpu().numpy().astype(np.float32),
@@ -243,9 +247,12 @@ def _compute_add_mask_for_vis(
     valid_err = depth_error[gt_d > add_depth_valid_for_error_min]
     thresh = depth_error_median_k * valid_err.median().item() if valid_err.numel() > 0 else 1e6
     non_presence_depth = (depth_error > thresh).detach().cpu().numpy()
-    surf_norm = render_dict["normal"]
-    norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0))
-    norm_mask = (norm_mag < add_norm_mag_threshold).detach().cpu().numpy()
+    surf_norm = render_dict.get("normal")
+    if surf_norm is not None:
+        norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0))
+        norm_mask = (norm_mag < add_norm_mag_threshold).detach().cpu().numpy()
+    else:
+        norm_mask = np.zeros_like(non_presence_sil, dtype=bool)
     add_mask = (non_presence_sil | non_presence_depth | norm_mask) & valid_depth_mask
     return add_mask
 
@@ -359,11 +366,12 @@ def _interactive_refine_inspector(
 
 
 def _refine_one_step(gaussian_model, training_frame, opt_params, enable_exposure, enable_sh, global_iter):
-    """One optimization step on a single frame. Returns (render_dict, total_loss)."""
+    """One optimization step on a single frame. Returns (render_dict, est_w2c, gt_color, gt_depth)."""
     gt_color = training_frame["color"].squeeze(0) if training_frame["color"].dim() > 3 else training_frame["color"]
     gt_depth = training_frame["depth"].squeeze(0) if training_frame["depth"].dim() > 2 else training_frame["depth"]
     render_settings, est_w2c = training_frame["render_settings"]
-    render_dict = render_gaussian_model(gaussian_model, render_settings, est_w2c)
+    renderer_type = training_frame.get("renderer_type", "2dgs")
+    render_dict = render_gaussian_model(gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
     rendered_color = render_dict["color"].permute(1, 2, 0)
     rendered_depth = render_dict["depth"]
     if enable_exposure and training_frame.get("exposure_ab") is not None:
@@ -375,12 +383,14 @@ def _refine_one_step(gaussian_model, training_frame, opt_params, enable_exposure
         rendered_color[depth_mask, :], gt_color[depth_mask, :]
     ) + opt_params.lambda_dssim * (1.0 - ssim(rendered_color, gt_color))
     depth_loss = l1_loss(rendered_depth[:, depth_mask], gt_depth[depth_mask])
-    dist_loss = 1000 * render_dict["rend_dist"].mean()
-    rend_normal = render_dict["rend_normal"]
-    surf_normal = render_dict["normal"]
-    normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
-    normal_loss = 0.05 * normal_error.mean()
-    total_loss = color_loss + depth_loss + reg_loss + dist_loss + normal_loss
+    total_loss = color_loss + depth_loss + reg_loss
+    if renderer_type != "3dgs":
+        dist_loss = 1000 * render_dict["rend_dist"].mean()
+        rend_normal = render_dict["rend_normal"]
+        surf_normal = render_dict["normal"]
+        normal_error = (1 - (rend_normal * surf_normal).sum(dim=0))[None]
+        normal_loss = 0.05 * normal_error.mean()
+        total_loss = total_loss + dist_loss + normal_loss
     total_loss.backward()
     if enable_sh and global_iter > 0 and global_iter % 1000 == 0:
         gaussian_model.oneupSHdegree()
@@ -396,6 +406,8 @@ def _prune_gaussians(
     """Prune low-opacity, oversized, and too-far Gaussians. No add. Returns total number removed."""
     with torch.no_grad():
         n_before = gaussian_model.get_size()
+        if n_before == 0:
+            return 0
         prune_mask = (gaussian_model.get_opacity() < prune_opacity_threshold).squeeze()
         n_valid = (~prune_mask).sum().item()
         if n_valid > 0:
@@ -444,9 +456,12 @@ def _add_gaussians_from_frame(
         depth_error = torch.abs(gt_d - render_depth_add) * (gt_d > add_depth_valid_for_error_min)
         valid_err = depth_error[gt_d > add_depth_valid_for_error_min]
         non_presence_depth = depth_error > (depth_error_median_k * valid_err.median() if valid_err.numel() > 0 else 1e6)
-        surf_norm = render_dict["normal"]
-        norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0))
-        norm_mask = norm_mag < add_norm_mag_threshold
+        surf_norm = render_dict.get("normal")
+        if surf_norm is not None:
+            norm_mag = torch.sqrt((surf_norm ** 2).sum(dim=0))
+            norm_mask = norm_mag < add_norm_mag_threshold
+        else:
+            norm_mask = torch.zeros_like(non_presence_sil, dtype=torch.bool)
         non_presence_mask = (
             (non_presence_sil | non_presence_depth | norm_mask).reshape(-1) & valid_depth_mask.reshape(-1)
         )
@@ -478,7 +493,8 @@ def _add_gaussians_from_frame(
         new_rots[:, 0] = 1
         new_opacities = inverse_sigmoid(torch.tensor(0.5, device="cuda")).expand(new_pt_cld.shape[0], 1)
         scale_val = torch.sqrt(mean3_sq_dist).clamp(min=1e-6, max=new_gaussian_scale_max)
-        new_scaling = torch.log(scale_val)[..., None].repeat(1, 2)
+        scale_cols = 3 if not getattr(gaussian_model, "isotropic", True) else 2
+        new_scaling = torch.log(scale_val)[..., None].repeat(1, scale_cols)
         gaussian_model.densification_postfix(
             new_xyz=new_pt_cld[:, :3],
             new_rgb=new_rgb,
@@ -511,7 +527,8 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                       prune_add_interval: int = 20,
                       refine_vis_interval: int = 0,
                       refine_vis_save: bool = True,
-                      refine_vis_interactive: bool = False) -> GaussianModel:
+                      refine_vis_interactive: bool = False,
+                      renderer_type: str = "2dgs") -> GaussianModel:
     """Refines a global map. Two modes:
     - shuffle: training_frames is an iterator; max_iterations total steps; random frame order.
     - sequential_per_frame: training_frames is indexable (e.g. RenderFrames); outer loop over
@@ -520,12 +537,22 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
     """
     has_intrinsics = all(x is not None for x in (height, width, fx, fy, cx, cy))
     opt_params = OptimizationParams(ArgumentParser(description="Training script parameters"))
-
-    gaussian_model = GaussianModel(3)
+    isotropic = renderer_type != "3dgs"
+    gaussian_model = GaussianModel(3, isotropic=isotropic)
     gaussian_model.active_sh_degree = 0
     if pt_cloud is None:
-        output_mesh = output_dir / "mesh" / "cleaned_mesh.ply"
-        output_mesh = o3d.io.read_triangle_mesh(str(output_mesh))
+        output_mesh_path = output_dir / "mesh" / "cleaned_mesh.ply"
+        if not output_mesh_path.exists():
+            raise FileNotFoundError(
+                f"Mesh file not found: {output_mesh_path}. "
+                "Run reconstruction eval first to generate cleaned_mesh.ply, or use init_from='splats' with merge_submaps."
+            )
+        output_mesh = o3d.io.read_triangle_mesh(str(output_mesh_path))
+        if len(output_mesh.vertices) == 0:
+            raise ValueError(
+                f"Loaded mesh from {output_mesh_path} has no vertices. "
+                "Reconstruction may have produced an empty mesh."
+            )
         pcd = o3d.geometry.PointCloud()
         pcd.points = output_mesh.vertices
         pcd.colors = output_mesh.vertex_colors
@@ -631,9 +658,8 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                                 add_silhouette_threshold, add_norm_mag_threshold,
                             )
                             _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_iter{iteration}")
-                if iteration > 0 and iteration % 100 == 0:
-                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
                 if do_add_gaussians and iteration > 0 and iteration % add_gaussians_every == 0:
+                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
                     n_added = _add_gaussians_from_frame(
                         gaussian_model, render_dict, training_frame, est_w2c,
                         fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
@@ -665,8 +691,8 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                 gt_color = training_frame["color"].squeeze(0) if training_frame["color"].dim() > 3 else training_frame["color"]
                 gt_depth = training_frame["depth"].squeeze(0) if training_frame["depth"].dim() > 2 else training_frame["depth"]
                 render_settings, estimate_w2c = training_frame["render_settings"]
-
-                render_dict = render_gaussian_model(gaussian_model, render_settings, estimate_w2c)
+                rtype = training_frame.get("renderer_type", "2dgs")
+                render_dict = render_gaussian_model(gaussian_model, render_settings, estimate_w2c, renderer_type=rtype)
                 rendered_color, rendered_depth = (
                     render_dict["color"].permute(1, 2, 0), render_dict["depth"])
                 rendered_color = torch.clamp(rendered_color, min=0.0, max=1.0)

@@ -73,7 +73,8 @@ class Tracker(object):
         Returns:
             A tuple containing losses and renders
         """
-        render_dict = render_gaussian_model(gaussian_model, render_settings,est_w2c,)
+        renderer_type = self.config.get("renderer", "2dgs")
+        render_dict = render_gaussian_model(gaussian_model, render_settings, est_w2c, renderer_type=renderer_type)
         rendered_color, rendered_depth = render_dict["color"], render_dict["depth"]
         # show_render_result(render_rgb=rendered_color, render_depth=rendered_depth,render_normal=render_dict["normal"],render_alpha=render_dict["alpha"],)
         if self.enable_exposure:
@@ -196,17 +197,24 @@ class Tracker(object):
         """
         #depth是numpy float32格式，intrinsics是np.array格式
         _, image, depth, gt_c2w,imu_meas = self.dataset[frame_id]
-        intrinsics = self.dataset.intrinsics  
-        if self.use_pose_utils:  
-            # 使用pose_utils进行位姿初始化 
+        intrinsics = self.dataset.intrinsics
+        init_c2w = gt_c2w  # 默认/回退值，避免未赋值（如 const_speed/odometer 未启用 pose_utils 时）
+        if self.use_pose_utils:
+            # 使用pose_utils进行位姿初始化
             init_c2w = self.pose_utils_adapter.estimate_pose(
                 frame_id, image, depth, intrinsics)
-            # print(f"init_c2w (frame {frame_id}):\n{init_c2w}")
         elif (self.help_camera_initialization or self.odometry_type == "odometer") and self.odometer.last_rgbd is None:
             _, last_image, last_depth, _ = self.dataset[frame_id - 1]
             self.odometer.update_last_rgbd(last_image, last_depth)
         elif self.odometry_type == "gt":
             return gt_c2w, None
+        elif self.odometry_type == "const_speed" and frame_id > 0 and prev_c2ws is not None and len(prev_c2ws) >= 2:
+            init_c2w = extrapolate_poses(prev_c2ws[1:])
+        elif self.odometry_type == "odometer" and frame_id > 0 and self.odometer.last_rgbd is not None:
+            odometer_rel = self.odometer.estimate_rel_pose(image, depth)
+            init_c2w = prev_c2ws[-1] @ odometer_rel
+        elif frame_id > 0 and prev_c2ws is not None and len(prev_c2ws) > 0:
+            init_c2w = prev_c2ws[-1]
         if frame_id == 0:
             return init_c2w, None
         #验证一下只时候初始化位姿的精度
@@ -248,8 +256,9 @@ class Tracker(object):
         est_w2c = torch.eye(4, device="cuda").float()
         est_w2c[:3,:3] = self.quad2rotation(camera_q)
         est_w2c[:3,3] = camera_T
-        render_settings,_ = get_render_settings(
-            self.dataset.width, self.dataset.height, self.dataset.intrinsics)
+        renderer_type = self.config.get("renderer", "2dgs")
+        render_settings, _ = get_render_settings(
+            self.dataset.width, self.dataset.height, self.dataset.intrinsics, renderer_type=renderer_type)
         gt_color = self.transform(image).cuda()
         gt_depth = np2torch(depth, "cuda")
         depth_mask = gt_depth > 0.0

@@ -239,9 +239,11 @@ class GaussianSLAM(object):
         for frame_id in range(len(self.dataset)):
             print("Processing frame", frame_id,"/",len(self.dataset))
             #执行mini——ba进行位姿估计,第一帧返回的是GT位姿
+            # 仅使用已估计的帧位姿，避免 frame_id<=1 时负索引取到未初始化的 estimated_c2ws 槽位
+            prev_pose_indices = [0, max(0, frame_id - 2), max(0, frame_id - 1)]
             estimated_c2w, exposure_ab = self.tracker.track(
                 frame_id, gaussian_model,
-                torch2np(self.estimated_c2ws[torch.tensor([0, frame_id - 2, frame_id - 1])]))
+                torch2np(self.estimated_c2ws[torch.tensor(prev_pose_indices)]))
             exposure_ab = exposure_ab if self.enable_exposure else None
             self.estimated_c2ws[frame_id] = np2torch(estimated_c2w)
 

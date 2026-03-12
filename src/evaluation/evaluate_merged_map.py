@@ -1,6 +1,7 @@
 """ This module is responsible for merging submaps. """
 from argparse import ArgumentParser
 from pathlib import Path
+import itertools
 
 import cv2
 import faiss
@@ -16,6 +17,7 @@ from src.entities.losses import isotropic_loss, l1_loss, ssim
 from src.utils.utils import (batch_search_faiss, get_render_settings,
                              np2ptcloud, render_gaussian_model, torch2np)
 from src.utils.gaussian_model_utils import BasicPointCloud, RGB2SH, inverse_sigmoid
+from simple_knn._C import distCUDA2
 from src.utils.vis_utils import show_render_result
 
 
@@ -65,16 +67,31 @@ def render_frames_collate_fn(batch):
     return batch[0]
 
 
-def merge_submaps(submaps_paths: list, radius: float = 0.01, device: str = "cuda") -> o3d.geometry.PointCloud:
-    """ Merge submaps into a single point cloud, which is then used for global map refinement.
+def merge_submaps(
+    submaps_paths: list,
+    radius: float = 0.01,
+    device: str = "cuda",
+    return_gaussian_params: bool = False,
+    max_points_before_voxel: int = 300_000,
+    voxel_size: float = 0.05,
+    max_distance_from_origin: float = 8.0,
+    outlier_nb_neighbors: int = 40,
+    outlier_std_ratio: float = 3.0,
+):
+    """Merge submaps with FAISS dedup, optional voxel downsampling, and statistical outlier removal.
+
     Args:
-        segments_paths (list): Folder path of the submaps.
-        radius (float, optional): Nearest neighbor distance threshold for adding a point. Defaults to 0.0001.
-        device (str, optional): Defaults to "cuda".
+        submaps_paths: Paths to submap .ckpt files.
+        radius: Neighbor distance threshold for dedup (points with no neighbor within radius are kept).
+        device: "cuda" or "cpu".
+        return_gaussian_params: If True, return (xyz, rgb, fdc, frest, opacity, scaling, rotation) with
+            full Gaussian attributes preserved; if False, return o3d.geometry.PointCloud (legacy).
 
     Returns:
-        o3d.geometry.PointCloud: merged point cloud
+        If return_gaussian_params is False: o3d.geometry.PointCloud.
+        If True: tuple (xyz, rgb, fdc, frest, opacity, scaling, rotation) on device, frest normalized to 15 channels.
     """
+    F_REST_SIZE = (3 + 1) ** 2 - 1
     pts_index = faiss.IndexFlatL2(3)
     if device == "cuda":
         pts_index = faiss.index_cpu_to_gpu(
@@ -82,29 +99,154 @@ def merge_submaps(submaps_paths: list, radius: float = 0.01, device: str = "cuda
             0,
             faiss.IndexIVFFlat(faiss.IndexFlatL2(3), 3, 500, faiss.METRIC_L2))
         pts_index.nprobe = 5
-    merged_pts = []
-    for submap_path in tqdm(submaps_paths, desc="Merging submaps"):
-        gaussian_params = torch.load(submap_path)["gaussian_params"]
-        current_pts = gaussian_params["xyz"].to(device).float().contiguous()
-        pts_index.train(current_pts)
-        distances, _ = batch_search_faiss(pts_index, current_pts, 8)
-        neighbor_num = (distances < radius).sum(axis=1).int()
-        ids_to_include = torch.where(neighbor_num == 0)[0]
-        pts_index.add(current_pts[ids_to_include])
-        merged_pts.append(current_pts[ids_to_include])
-    pts = torch2np(torch.vstack(merged_pts))
-    pt_cloud = np2ptcloud(pts, np.zeros_like(pts))
 
-    # Downsampling if the total number of points is too large
-    if len(pt_cloud.points) > 800_000:
-        voxel_size = 0.06
-        pt_cloud = pt_cloud.voxel_down_sample(voxel_size)
-        print(f"Downsampled point cloud to {len(pt_cloud.points)} points")
-    filtered_pt_cloud, _ = pt_cloud.remove_statistical_outlier(nb_neighbors=40, std_ratio=3.0)
-    del pts_index
-    return filtered_pt_cloud
+    if return_gaussian_params:
+        merged_xyz, merged_rgb, merged_fdc, merged_frest = [], [], [], []
+        merged_opacity, merged_scaling, merged_rotation = [], [], []
+        for submap_path in tqdm(submaps_paths, desc="Merging submaps (with attributes)"):
+            ckpt = torch.load(submap_path, map_location=device)
+            gp = ckpt["gaussian_params"]
+            xyz = gp["xyz"].to(device).float().contiguous()
+            pts_index.train(xyz)
+            distances, _ = batch_search_faiss(pts_index, xyz, 8)
+            neighbor_num = (distances < radius).sum(axis=1).int()
+            ids_to_include = torch.where(neighbor_num == 0)[0]
+            pts_index.add(xyz[ids_to_include])
+            merged_xyz.append(xyz[ids_to_include])
+            merged_rgb.append(gp["rgb"].to(device).float()[ids_to_include])
+            merged_fdc.append(gp["features_dc"].to(device).float()[ids_to_include])
+            fr = gp["features_rest"].to(device).float()[ids_to_include]
+            if fr.shape[1] != F_REST_SIZE:
+                if fr.shape[1] < F_REST_SIZE:
+                    pad = torch.zeros((fr.shape[0], F_REST_SIZE - fr.shape[1], 3), dtype=fr.dtype, device=fr.device)
+                    fr = torch.cat([fr, pad], dim=1)
+                else:
+                    fr = fr[:, :F_REST_SIZE, :].contiguous()
+            merged_frest.append(fr)
+            merged_opacity.append(gp["opacity"].to(device).float()[ids_to_include])
+            merged_scaling.append(gp["scaling"].to(device).float()[ids_to_include])
+            merged_rotation.append(gp["rotation"].to(device).float()[ids_to_include])
+        xyz = torch.vstack(merged_xyz)
+        rgb = torch.vstack(merged_rgb)
+        fdc = torch.vstack(merged_fdc)
+        frest = torch.vstack(merged_frest)
+        opacity = torch.vstack(merged_opacity)
+        scaling = torch.vstack(merged_scaling)
+        rotation = torch.vstack(merged_rotation)
+        del pts_index
+
+        # Filter out far Gaussians based on distance to origin (if requested).
+        if max_distance_from_origin is not None and max_distance_from_origin > 0.0:
+            dist = torch.sqrt((xyz ** 2).sum(dim=1))
+            keep = dist <= max_distance_from_origin
+            if keep.sum() == 0:
+                print(
+                    f"merge_submaps: max_distance_from_origin={max_distance_from_origin} "
+                    "filtered out all Gaussians, skipping distance filter."
+                )
+            else:
+                xyz = xyz[keep]
+                rgb = rgb[keep]
+                fdc = fdc[keep]
+                frest = frest[keep]
+                opacity = opacity[keep]
+                scaling = scaling[keep]
+                rotation = rotation[keep]
+
+        n = xyz.shape[0]
+        if n > max_points_before_voxel:
+            pcd = np2ptcloud(torch2np(xyz), torch2np(rgb))
+            pcd_down = pcd.voxel_down_sample(voxel_size)
+            pts_down = np.asarray(pcd_down.points)
+            if len(pts_down) > 0:
+                idx_flat = faiss.IndexFlatL2(3)
+                idx_flat.add(torch2np(xyz).astype(np.float32))
+                _, I = idx_flat.search(pts_down.astype(np.float32), 1)
+                indices = torch.from_numpy(I[:, 0]).long().to(device)
+                xyz, rgb = xyz[indices], rgb[indices]
+                fdc, frest = fdc[indices], frest[indices]
+                opacity, scaling, rotation = opacity[indices], scaling[indices], rotation[indices]
+            print(f"Downsampled to {xyz.shape[0]} points")
+
+        pcd = np2ptcloud(torch2np(xyz), torch2np(rgb))
+        _, inlier_indices = pcd.remove_statistical_outlier(nb_neighbors=outlier_nb_neighbors, std_ratio=outlier_std_ratio)
+        inlier_indices = np.asarray(inlier_indices)
+        xyz = xyz[inlier_indices]
+        rgb = rgb[inlier_indices]
+        fdc = fdc[inlier_indices]
+        frest = frest[inlier_indices]
+        opacity = opacity[inlier_indices]
+        scaling = scaling[inlier_indices]
+        rotation = rotation[inlier_indices]
+        print(f"Merged (dedup + outlier) {xyz.shape[0]} Gaussians with full attributes")
+
+        # Re-initialize scaling and rotation instead of inheriting from submaps.
+        n_final = xyz.shape[0]
+        if n_final > 0:
+            # Compute a per-point scale from approximate nearest-neighbor distance.
+            if xyz.is_cuda:
+                dist2 = torch.clamp_min(
+                    distCUDA2(xyz.detach().clone().float().cuda()), 1e-7
+                )
+            else:
+                # Fallback: use a global extent-based scale on CPU to avoid O(N^2) NN.
+                extent = (xyz.max(dim=0).values - xyz.min(dim=0).values).max()
+                base_scale = max(extent.item() / 512.0, 1e-3)
+                dist2 = torch.full(
+                    (n_final,),
+                    base_scale * base_scale,
+                    dtype=xyz.dtype,
+                    device=xyz.device,
+                )
+            scale_cols = 3  # 不区分 isotropic，统一用 3 维缩放
+            scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, scale_cols)
+            rots = torch.zeros((n_final, 4), device=xyz.device, dtype=xyz.dtype)
+            rots[:, 0] = 1.0
+            scaling = scales
+            rotation = rots
+
+        return xyz, rgb, fdc, frest, opacity, scaling, rotation
 
 
+def merge_submaps_inherit_from_splats(submaps_paths: list, radius: float = 0.01, device: str = "cuda") -> o3d.geometry.PointCloud:
+    F_REST_SIZE = (3 + 1) ** 2 - 1  # 15 for max_sh_degree=3 (evaluator/refine use sh_degree=3)
+    all_xyz, all_rgb, all_fdc, all_frest = [], [], [], []
+    all_opacity, all_scaling, all_rotation = [], [], []
+    for p in submaps_paths:
+        ckpt = torch.load(p, map_location="cuda")
+        gp = ckpt["gaussian_params"]
+        all_xyz.append(gp["xyz"])
+        all_rgb.append(gp["rgb"])
+        all_fdc.append(gp["features_dc"])
+        fr = gp["features_rest"]
+        if fr.shape[1] != F_REST_SIZE:
+            ni = fr.shape[0]
+            if fr.shape[1] < F_REST_SIZE:
+                pad = torch.zeros((ni, F_REST_SIZE - fr.shape[1], 3), dtype=fr.dtype, device=fr.device)
+                fr = torch.cat([fr, pad], dim=1)
+            else:
+                fr = fr[:, :F_REST_SIZE, :].contiguous()
+        all_frest.append(fr)
+        all_opacity.append(gp["opacity"])
+        all_scaling.append(gp["scaling"])
+        all_rotation.append(gp["rotation"])
+    xyz = torch.cat(all_xyz, dim=0).cuda()
+    rgb = torch.cat(all_rgb, dim=0).cuda()
+    fdc = torch.cat(all_fdc, dim=0).cuda()
+    frest = torch.cat(all_frest, dim=0).cuda()
+    opacity = torch.cat(all_opacity, dim=0).cuda()
+    scaling = torch.cat(all_scaling, dim=0).cuda()
+    rotation = torch.cat(all_rotation, dim=0).cuda()
+    try:
+        import json as _json
+        _logpath = "/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-25a42b.log"
+        with open(_logpath, "a") as _f:
+            _f.write(_json.dumps({"hypothesisId": "H2-H4", "location": "evaluate_merged_map.merge_submaps_inherit_from_splats", "message": "merged shapes", "data": {"xyz": list(xyz.shape), "frest": list(frest.shape), "fdc": list(fdc.shape)}, "timestamp": __import__("time").time()}) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    return xyz, rgb, fdc, frest, opacity, scaling, rotation
+     
 def backproject_frame_to_pointcloud(
     gt_color: torch.Tensor,
     gt_depth: torch.Tensor,
@@ -377,13 +519,14 @@ def _refine_one_step(gaussian_model, training_frame, opt_params, enable_exposure
     if enable_exposure and training_frame.get("exposure_ab") is not None:
         rendered_color = torch.clamp(
             rendered_color * torch.exp(training_frame["exposure_ab"][0, 0]) + training_frame["exposure_ab"][0, 1], 0, 1.0)
-    reg_loss = isotropic_loss(gaussian_model.get_scaling())
-    depth_mask = (gt_depth > 0)
+    #reg_loss = isotropic_loss(gaussian_model.get_scaling())
+    depth_mask = (gt_depth > 0.05)
     color_loss = (1.0 - opt_params.lambda_dssim) * l1_loss(
         rendered_color[depth_mask, :], gt_color[depth_mask, :]
     ) + opt_params.lambda_dssim * (1.0 - ssim(rendered_color, gt_color))
     depth_loss = l1_loss(rendered_depth[:, depth_mask], gt_depth[depth_mask])
-    total_loss = color_loss + depth_loss + reg_loss
+    print(f"  [refine] 颜色损失 {color_loss.item():.4f}，深度损失 {depth_loss.item():.4f}")
+    total_loss = color_loss + 0.2*depth_loss 
     if renderer_type != "3dgs":
         dist_loss = 1000 * render_dict["rend_dist"].mean()
         rend_normal = render_dict["rend_normal"]
@@ -392,18 +535,48 @@ def _refine_one_step(gaussian_model, training_frame, opt_params, enable_exposure
         normal_loss = 0.05 * normal_error.mean()
         total_loss = total_loss + dist_loss + normal_loss
     total_loss.backward()
-    if enable_sh and global_iter > 0 and global_iter % 1000 == 0:
-        gaussian_model.oneupSHdegree()
+    # if enable_sh and global_iter > 0 and global_iter % 1000 == 0:
+    #     gaussian_model.oneupSHdegree()
     return render_dict, est_w2c, gt_color, gt_depth
 
-
+def _prune_spatial_outliers(
+    gaussian_model: GaussianModel,
+    radius: float = 0.02,
+    min_neighbors: int = 3,
+    k_search: int = 5,
+) -> int:
+    """Prune Gaussians that have fewer than min_neighbors within radius (e.g. 2cm). Returns number removed."""
+    with torch.no_grad():
+        xyz = gaussian_model.get_xyz()
+        n = xyz.shape[0]
+        if n == 0 or n < k_search:
+            return 0
+        xyz_np = xyz.detach().cpu().numpy().astype(np.float32)
+        index = faiss.IndexFlatL2(3)
+        index.add(xyz_np)
+        batch_size = 65535
+        counts_in_radius = []
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            D, _ = index.search(xyz_np[start:end], k_search)
+            radius_sq = radius * radius
+            count = (D <= radius_sq).sum(axis=1)
+            counts_in_radius.append(count)
+        counts_in_radius = np.concatenate(counts_in_radius, axis=0)
+        outlier_mask = torch.from_numpy(counts_in_radius < min_neighbors + 1).to(xyz.device)
+        n_outlier = outlier_mask.sum().item()
+        if n_outlier > 0:
+            gaussian_model.prune_points(outlier_mask)
+        return n_outlier
 def _prune_gaussians(
     gaussian_model: GaussianModel,
     prune_opacity_threshold: float,
     max_scale_ratio_to_mode: float,
     max_distance_from_origin: float = None,
+    outlier_radius: float = 0.03,
+    outlier_min_neighbors: int = 3,
 ) -> int:
-    """Prune low-opacity, oversized, and too-far Gaussians. No add. Returns total number removed."""
+    """Prune low-opacity, oversized, too-far, and spatial-outlier Gaussians. No add. Returns total number removed."""
     with torch.no_grad():
         n_before = gaussian_model.get_size()
         if n_before == 0:
@@ -414,12 +587,18 @@ def _prune_gaussians(
             gaussian_model.prune_points(prune_mask)
         if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
             prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode, verbose=False)
-        if max_distance_from_origin is not None and max_distance_from_origin > 0:
-            xyz = gaussian_model.get_xyz()
-            dist = torch.sqrt((xyz ** 2).sum(dim=1))
-            far_mask = dist > max_distance_from_origin
-            if far_mask.any():
-                gaussian_model.prune_points(far_mask)
+        # if max_distance_from_origin is not None and max_distance_from_origin > 0:
+        #     xyz = gaussian_model.get_xyz()
+        #     dist = torch.sqrt((xyz ** 2).sum(dim=1))
+        #     far_mask = dist > max_distance_from_origin
+        #     if far_mask.any():
+        #         gaussian_model.prune_points(far_mask)
+        # if outlier_radius > 0 and outlier_min_neighbors >= 1:
+        #     n_out = _prune_spatial_outliers(
+        #         gaussian_model, radius=outlier_radius, min_neighbors=outlier_min_neighbors
+        #     )
+        #     if n_out > 0:
+        #         print(f"  [refine] 离群点去除 {n_out} 个高斯")
         n_after = gaussian_model.get_size()
         n_removed = n_before - n_after
         if n_removed > 0:
@@ -507,7 +686,7 @@ def _add_gaussians_from_frame(
         return new_pt_cld.shape[0]
 
 
-def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_iterations: int,
+def refine_global_map(gaussian_model: GaussianModel, opt_params: OptimizationParams, training_frames, max_iterations: int,
                       export_refine_mesh=True, output_dir=".",
                       len_frames=None, o3d_intrinsic=None, enable_sh=True, enable_exposure=False,
                       max_scale_ratio_to_mode: float = 5.0,
@@ -528,42 +707,43 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                       refine_vis_interval: int = 0,
                       refine_vis_save: bool = True,
                       refine_vis_interactive: bool = False,
-                      renderer_type: str = "2dgs") -> GaussianModel:
+                      renderer_type: str = "2dgs",
+                      densification_interval: int = 100,
+                      opacity_reset_interval: int = 3000,
+                      densify_from_iter: int = 500,
+                      densify_until_iter: int = 15000,
+                      densify_grad_threshold: float = 0.0002,
+                      percent_dense: float = 0.01) -> GaussianModel:
     """Refines a global map. Two modes:
     - shuffle: training_frames is an iterator; max_iterations total steps; random frame order.
     - sequential_per_frame: training_frames is indexable (e.g. RenderFrames); outer loop over
       keyframes in order, inner loop per_frame_iters per keyframe; every prune_add_interval steps
       do prune + add from current frame (mapper-style).
     """
+    # #region agent log
+    try:
+        import json as _json
+        import time as _time
+        with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-9c0668.log", "a") as _f:
+            _f.write(_json.dumps({"sessionId": "9c0668", "hypothesisId": "H5", "location": "evaluate_merged_map.py:refine_entry", "message": "refine_global_map entry", "data": {"n_gaussians": gaussian_model.get_size(), "refine_mode": refine_mode}, "timestamp": _time.time()}) + "\n")
+    except Exception:
+        pass
+    # #endregion
     has_intrinsics = all(x is not None for x in (height, width, fx, fy, cx, cy))
-    opt_params = OptimizationParams(ArgumentParser(description="Training script parameters"))
-    isotropic = renderer_type != "3dgs"
-    gaussian_model = GaussianModel(3, isotropic=isotropic)
-    gaussian_model.active_sh_degree = 0
-    if pt_cloud is None:
-        output_mesh_path = output_dir / "mesh" / "cleaned_mesh.ply"
-        if not output_mesh_path.exists():
-            raise FileNotFoundError(
-                f"Mesh file not found: {output_mesh_path}. "
-                "Run reconstruction eval first to generate cleaned_mesh.ply, or use init_from='splats' with merge_submaps."
-            )
-        output_mesh = o3d.io.read_triangle_mesh(str(output_mesh_path))
-        if len(output_mesh.vertices) == 0:
-            raise ValueError(
-                f"Loaded mesh from {output_mesh_path} has no vertices. "
-                "Reconstruction may have produced an empty mesh."
-            )
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = output_mesh.vertices
-        pcd.colors = output_mesh.vertex_colors
-        pcd = pcd.voxel_down_sample(voxel_size=0.02)
-        pcd = BasicPointCloud(points=np.asarray(pcd.points), colors=np.asarray(pcd.colors))
-        gaussian_model.create_from_pcd(pcd, 1.0)
-        gaussian_model.training_setup(opt_params)
+    if refine_mode == "shuffle":
+        # #region agent log
+        try:
+            import json as _j2
+            import time as _t2
+            with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-9c0668.log", "a") as _f:
+                _f.write(_j2.dumps({"sessionId": "9c0668", "hypothesisId": "H2", "location": "evaluate_merged_map.py:shuffle_use_iterator", "message": "shuffle: using on-demand iterator (no list)", "data": {}, "timestamp": _t2.time()}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        # Avoid list(training_frames) to prevent OOM; re-iter DataLoader when exhausted.
+        _training_frames_iter = iter(training_frames)
     else:
-        gaussian_model.training_setup(opt_params)
-        gaussian_model.add_points(pt_cloud)
-
+        _training_frames_iter = None
     if max_scale_ratio_to_mode is not None and max_scale_ratio_to_mode > 0:
         prune_oversized_gaussians(gaussian_model, max_scale_ratio=max_scale_ratio_to_mode)
     if max_distance_from_origin is not None and max_distance_from_origin > 0:
@@ -576,103 +756,83 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
         vis_dir = Path(output_dir) / "refine_vis"
         vis_dir.mkdir(parents=True, exist_ok=True)
 
-    if refine_mode == "sequential_per_frame":
-        # Mapper-style: outer = keyframes in order, inner = per_frame_iters; every prune_add_interval: prune + add
-        n_frames = len(training_frames) if len_frames is None else len_frames
-        total_iters = n_frames * per_frame_iters
-        global_iter = 0
-        pbar = tqdm(total=total_iters, desc="Refinement (sequential per frame)")
-        for frame_idx in range(n_frames):
-            training_frame = training_frames[frame_idx]
-            for inner_iter in range(per_frame_iters):
-                torch.cuda.empty_cache()
-                gaussian_model.update_learning_rate(global_iter)
-                gaussian_model.optimizer.zero_grad(set_to_none=True)
-                render_dict, est_w2c, _, _ = _refine_one_step(
-                    gaussian_model, training_frame, opt_params, enable_exposure, enable_sh, global_iter)
-                with torch.no_grad():
-                    gaussian_model.optimizer.step()
-                    gaussian_model.optimizer.zero_grad(set_to_none=True)
-                if do_vis and global_iter % refine_vis_interval == 0:
-                    save_id = f"f{frame_idx:04d}_i{inner_iter:04d}" if refine_vis_save and vis_dir else None
-                    _vis_refine_frame(render_dict, training_frame, save_id=save_id, save_path=str(vis_dir) if vis_dir else None)
-                    if refine_vis_interactive and has_intrinsics:
-                        with torch.no_grad():
-                            sil, nm, de = _compute_pixel_metrics_for_vis(render_dict, training_frame)
-                            rgb = render_dict["color"].squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
-                            rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-                            render_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                            prune_list = _compute_prune_projection_for_vis(
-                                gaussian_model, prune_opacity_threshold, est_w2c, fx, fy, cx, cy, height, width,
-                            )
-                            add_mask = _compute_add_mask_for_vis(
-                                render_dict, training_frame, depth_error_median_k,
-                                add_valid_depth_min, add_depth_valid_for_error_min,
-                                add_silhouette_threshold, add_norm_mag_threshold,
-                            )
-                            _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_{frame_idx}_{inner_iter}")
-                if inner_iter > 0 and inner_iter % prune_add_interval == 0:
-                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
-                    # 最后一次迭代只修剪不添加，避免新加高斯没有后续优化
-                    if has_intrinsics and inner_iter < per_frame_iters - 1:
-                        n_added = _add_gaussians_from_frame(
-                            gaussian_model, render_dict, training_frame, est_w2c,
-                            fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
+   
+    # Original shuffle mode: iterator, max_iterations
+    do_add_gaussians = add_gaussians_every > 0 and has_intrinsics
+    iteration = 0
+    for iteration in tqdm(range(max_iterations), desc="Refinement"):
+        # #region agent log
+        if iteration == 0:
+            try:
+                import json as _j4
+                import time as _t4
+                with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-9c0668.log", "a") as _f:
+                    _f.write(_j4.dumps({"sessionId": "9c0668", "hypothesisId": "H3", "location": "evaluate_merged_map.py:first_iter_start", "message": "first refine iteration start", "data": {"iteration": 0}, "timestamp": _t4.time()}) + "\n")
+            except Exception:
+                pass
+        # #endregion
+        torch.cuda.empty_cache()
+        if _training_frames_iter is not None:
+            training_frame = next(_training_frames_iter, None)
+            if training_frame is None:
+                _training_frames_iter = iter(training_frames)
+                training_frame = next(_training_frames_iter)
+        else:
+            training_frame = training_frames[iteration % len(training_frames)]
+        gaussian_model.update_learning_rate(iteration)
+        gaussian_model.optimizer.zero_grad(set_to_none=True)
+        render_dict, est_w2c, _, _ = _refine_one_step(
+                gaussian_model, training_frame, opt_params, enable_exposure, enable_sh, iteration)
+        # Viewspace gradient accumulation for 3DGS-style densification
+        vp = render_dict.get("viewspace_points")
+        if vp is not None and vp.grad is not None:
+            vis_filter = render_dict.get("visibility_filter", slice(None))
+            gaussian_model.add_densification_stats(vp, vis_filter)
+        if iteration % densification_interval == 0 and densify_from_iter <= iteration < densify_until_iter:
+            gaussian_model.densify_and_prune(
+                iteration=iteration,
+                densify_grad_threshold=densify_grad_threshold,
+                densify_until_iter=densify_until_iter,
+                percent_dense=percent_dense,
+                prune_opacity_threshold=prune_opacity_threshold,
+            )
+            print(f"  [refine] 密度化 {iteration} 次，当前共 {gaussian_model.get_size()} 个高斯")
+        with torch.no_grad():
+            if do_vis and iteration % refine_vis_interval == 0:
+                save_id = f"iter{iteration:06d}" if refine_vis_save and vis_dir else None
+                _vis_refine_frame(render_dict, training_frame, save_id=save_id, save_path=str(vis_dir) if vis_dir else None)
+                if refine_vis_interactive and has_intrinsics:
+                    with torch.no_grad():
+                        sil, nm, de = _compute_pixel_metrics_for_vis(render_dict, training_frame)
+                        rgb = render_dict["color"].squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
+                        rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+                        render_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                        prune_list = _compute_prune_projection_for_vis(
+                            gaussian_model, prune_opacity_threshold, est_w2c, fx, fy, cx, cy, height, width,
+                        )
+                        add_mask = _compute_add_mask_for_vis(
+                            render_dict, training_frame, depth_error_median_k,
                             add_valid_depth_min, add_depth_valid_for_error_min,
                             add_silhouette_threshold, add_norm_mag_threshold,
-                            max_distance_from_origin,
                         )
-                        if n_added > 0:
-                            print(f"  [refine] 新增 {n_added} 个高斯，当前共 {gaussian_model.get_size()} 个")
-                global_iter += 1
-                pbar.update(1)
-        pbar.close()
-        print(f"[refine] 结束共 {gaussian_model.get_size()} 个高斯")
-    else:
-        # Original shuffle mode: iterator, max_iterations
-        do_add_gaussians = add_gaussians_every > 0 and has_intrinsics
-        iteration = 0
-        for iteration in tqdm(range(max_iterations), desc="Refinement"):
-            torch.cuda.empty_cache()
-            training_frame = next(training_frames)
-            gaussian_model.update_learning_rate(iteration)
+                        _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_iter{iteration}")
+            # if do_add_gaussians and iteration > 0 and iteration % add_gaussians_every == 0:
+            #     _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
+            #     n_added = _add_gaussians_from_frame(
+            #         gaussian_model, render_dict, training_frame, est_w2c,
+            #         fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
+            #         add_valid_depth_min, add_depth_valid_for_error_min,
+            #         add_silhouette_threshold, add_norm_mag_threshold,
+            #         max_distance_from_origin,
+            #     )
+            #     if n_added > 0:
+            #         print(f"  [refine] 新增 {n_added} 个高斯，当前共 {gaussian_model.get_size()} 个")
+            gaussian_model.optimizer.step()
             gaussian_model.optimizer.zero_grad(set_to_none=True)
-            render_dict, est_w2c, _, _ = _refine_one_step(
-                gaussian_model, training_frame, opt_params, enable_exposure, enable_sh, iteration)
-            with torch.no_grad():
-                if do_vis and iteration % refine_vis_interval == 0:
-                    save_id = f"iter{iteration:06d}" if refine_vis_save and vis_dir else None
-                    _vis_refine_frame(render_dict, training_frame, save_id=save_id, save_path=str(vis_dir) if vis_dir else None)
-                    if refine_vis_interactive and has_intrinsics:
-                        with torch.no_grad():
-                            sil, nm, de = _compute_pixel_metrics_for_vis(render_dict, training_frame)
-                            rgb = render_dict["color"].squeeze(0).detach().cpu().numpy().transpose(1, 2, 0)
-                            rgb = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
-                            render_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-                            prune_list = _compute_prune_projection_for_vis(
-                                gaussian_model, prune_opacity_threshold, est_w2c, fx, fy, cx, cy, height, width,
-                            )
-                            add_mask = _compute_add_mask_for_vis(
-                                render_dict, training_frame, depth_error_median_k,
-                                add_valid_depth_min, add_depth_valid_for_error_min,
-                                add_silhouette_threshold, add_norm_mag_threshold,
-                            )
-                            _interactive_refine_inspector(render_bgr, sil, nm, de, prune_list, add_mask=add_mask, title_suffix=f"_iter{iteration}")
-                if do_add_gaussians and iteration > 0 and iteration % add_gaussians_every == 0:
-                    _prune_gaussians(gaussian_model, prune_opacity_threshold, max_scale_ratio_to_mode, max_distance_from_origin)
-                    n_added = _add_gaussians_from_frame(
-                        gaussian_model, render_dict, training_frame, est_w2c,
-                        fx, fy, cx, cy, depth_error_median_k, add_gaussians_max_points, new_gaussian_scale_max,
-                        add_valid_depth_min, add_depth_valid_for_error_min,
-                        add_silhouette_threshold, add_norm_mag_threshold,
-                        max_distance_from_origin,
-                    )
-                    if n_added > 0:
-                        print(f"  [refine] 新增 {n_added} 个高斯，当前共 {gaussian_model.get_size()} 个")
-                gaussian_model.optimizer.step()
-                gaussian_model.optimizer.zero_grad(set_to_none=True)
-            iteration += 1
-        print(f"[refine] 结束共 {gaussian_model.get_size()} 个高斯")
+        if iteration > 0 and iteration % opacity_reset_interval == 0:
+            gaussian_model.reset_opacity_for_densification(decay=0.8)
+        iteration += 1
+    print(f"[refine] 结束共 {gaussian_model.get_size()} 个高斯")
     
     try:
         if export_refine_mesh and len_frames is not None:
@@ -683,11 +843,16 @@ def refine_global_map(pt_cloud: o3d.geometry.PointCloud, training_frames, max_it
                 voxel_length=5.0 * scale / 512.0,
                 sdf_trunc=0.04 * scale,
                 color_type=o3d.pipelines.integration.TSDFVolumeColorType.RGB8)
+            if refine_mode != "sequential_per_frame":
+                _mesh_frames_iter = iter(training_frames)
             for i in tqdm(range(mesh_len), desc="Integrating mesh"):
                 if refine_mode == "sequential_per_frame":
                     training_frame = training_frames[i]
                 else:
-                    training_frame = next(training_frames)
+                    training_frame = next(_mesh_frames_iter, None)
+                    if training_frame is None:
+                        _mesh_frames_iter = iter(training_frames)
+                        training_frame = next(_mesh_frames_iter)
                 gt_color = training_frame["color"].squeeze(0) if training_frame["color"].dim() > 3 else training_frame["color"]
                 gt_depth = training_frame["depth"].squeeze(0) if training_frame["depth"].dim() > 2 else training_frame["depth"]
                 render_settings, estimate_w2c = training_frame["render_settings"]

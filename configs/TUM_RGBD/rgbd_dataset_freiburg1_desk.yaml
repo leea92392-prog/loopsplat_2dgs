@@ -3,7 +3,7 @@ inherit_from: configs/TUM_RGBD/tum_rgbd_3dgs.yaml
 
 data:
   input_path: /home/wujie/ws_0122/data/TUM-RGBD/rgbd_dataset_freiburg1_desk
-  output_path: output_3dgs/TUM_RGBD/rgbd_dataset_freiburg1_desk
+  output_path: output_3dgs/TUM_RGBD/rgbd_dataset_freiburg1_desk_only_miniba
   scene_name: rgbd_dataset_freiburg1_desk
 start_idx: 50
 stride: 2

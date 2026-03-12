@@ -59,7 +59,7 @@ cam:
   depth_scale: 1000.0
 # 全局图 refine：sequential_per_frame=按关键帧顺序，每帧迭代 per_frame_iters 次，每 prune_add_interval 次做一次 prune+add
 refine_global_map:
-  refine_mode: "shuffle"  # "shuffle" | "sequential_per_frame"
+  refine_mode: "sequential_per_frame"  # "shuffle" | "sequential_per_frame"
   per_frame_iters: 1000    # 每个关键帧内层迭代次数（仅 sequential_per_frame）
   prune_add_interval: 100  # 每 N 次内层迭代做一次删点+加点（仅 sequential_per_frame）
   add_gaussians_every: 500
@@ -79,7 +79,7 @@ refine_global_map:
   refine_vis_interactive: false  # 是否弹出两个互动窗口（像素指标 / 修剪点，按 q 继续）
 
 lc: 
-  merge_radius: 0.01
+  merge_radius: 0.005
   min_similarity: 0.5
   pgo_edge_prune_thres: 0.25
   voxel_size: 0.02

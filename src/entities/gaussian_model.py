@@ -412,27 +412,46 @@ class GaussianModel:
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
+        # #region agent log
+        import json as _json
+        _logpath = "/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-25a42b.log"
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
             if group["name"] in tensors_dict:
                 extension_tensor = tensors_dict[group["name"]]
-                stored_state = self.optimizer.state.get(group["params"][0], None)
+                current_param = group["params"][0]
+                try:
+                    with open(_logpath, "a") as _f:
+                        _f.write(_json.dumps({"hypothesisId": "H1-H5", "location": "gaussian_model.cat_tensors_to_optimizer", "message": "shapes before cat", "data": {"group": group["name"], "current_shape": list(current_param.shape), "extension_shape": list(extension_tensor.shape), "dim1_match": current_param.dim() > 1 and extension_tensor.dim() > 1 and current_param.shape[1:] == extension_tensor.shape[1:]}, "timestamp": __import__("time").time()}) + "\n")
+                except Exception:
+                    pass
+                # #endregion
+                new_param = nn.Parameter(
+                    torch.cat((current_param, extension_tensor), dim=0).requires_grad_(True))
+                stored_state = self.optimizer.state.get(current_param, None)
                 if stored_state is not None:
-                    stored_state["exp_avg"] = torch.cat(
-                        (stored_state["exp_avg"], torch.zeros_like(extension_tensor)), dim=0)
-                    stored_state["exp_avg_sq"] = torch.cat(
-                        (stored_state["exp_avg_sq"], torch.zeros_like(extension_tensor)), dim=0)
+                    exp_avg = stored_state["exp_avg"]
+                    exp_avg_sq = stored_state["exp_avg_sq"]
+                    # Ensure non-dim0 shapes match (e.g. (N, 15, 3) vs (K, 15, 3)).
+                    # After many prune/add cycles or inconsistent state, exp_avg can have wrong shape.
+                    if exp_avg.shape[1:] == extension_tensor.shape[1:]:
+                        new_exp_avg = torch.cat(
+                            (exp_avg, torch.zeros_like(extension_tensor)), dim=0)
+                        new_exp_avg_sq = torch.cat(
+                            (exp_avg_sq, torch.zeros_like(extension_tensor)), dim=0)
+                    else:
+                        # Reinit state to avoid "Sizes of tensors must match except in dimension 0".
+                        new_exp_avg = torch.zeros_like(new_param)
+                        new_exp_avg_sq = torch.zeros_like(new_param)
+                    stored_state["exp_avg"] = new_exp_avg
+                    stored_state["exp_avg_sq"] = new_exp_avg_sq
 
-                    del self.optimizer.state[group["params"][0]]
-                    group["params"][0] = nn.Parameter(
-                        torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                    self.optimizer.state[group["params"][0]] = stored_state
-
-                    optimizable_tensors[group["name"]] = group["params"][0]
+                    del self.optimizer.state[current_param]
+                    group["params"][0] = new_param
+                    self.optimizer.state[new_param] = stored_state
                 else:
-                    group["params"][0] = nn.Parameter(
-                        torch.cat((group["params"][0], extension_tensor), dim=0).requires_grad_(True))
-                    optimizable_tensors[group["name"]] = group["params"][0]
+                    group["params"][0] = new_param
+                optimizable_tensors[group["name"]] = group["params"][0]
 
         return optimizable_tensors
 
@@ -448,24 +467,172 @@ class GaussianModel:
             "rgb": new_rgb,
         }
 
-        optimizable_tensors = self.cat_tensors_to_optimizer(d)
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
-        self._rgb = optimizable_tensors["rgb"]
+        if self.optimizer is None:
+            # Initial load: set parameters directly (caller will call training_setup next).
+            # Avoids cat with empty tensors of wrong shape (e.g. (0,) vs (N, 3)).
+            self._xyz = nn.Parameter(d["xyz"].float().cuda().requires_grad_(True))
+            self._features_dc = nn.Parameter(d["f_dc"].float().cuda().contiguous().requires_grad_(True))
+            self._features_rest = nn.Parameter(d["f_rest"].float().cuda().contiguous().requires_grad_(True))
+            self._opacity = nn.Parameter(d["opacity"].float().cuda().requires_grad_(True))
+            self._scaling = nn.Parameter(d["scaling"].float().cuda().requires_grad_(True))
+            self._rotation = nn.Parameter(d["rotation"].float().cuda().requires_grad_(True))
+            self._rgb = nn.Parameter(d["rgb"].float().cuda().requires_grad_(True))
+        else:
+            optimizable_tensors = self.cat_tensors_to_optimizer(d)
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
+            self._rgb = optimizable_tensors["rgb"]
 
-        self.xyz_gradient_accum = torch.zeros((self.get_xyz().shape[0], 1), device="cuda")
-        self.denom = torch.zeros((self.get_xyz().shape[0], 1), device="cuda")
-        self.max_radii2D = torch.zeros(
-            (self.get_xyz().shape[0]), device="cuda")
+        n = self.get_xyz().shape[0]
+        self.xyz_gradient_accum = torch.zeros((n, 1), device="cuda")
+        self.denom = torch.zeros((n, 1), device="cuda")
+        self.max_radii2D = torch.zeros((n,), device="cuda")
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(
             viewspace_point_tensor.grad[update_filter, :2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
+
+    def densify_and_prune(
+        self,
+        iteration: int,
+        densify_grad_threshold: float,
+        densify_until_iter: int,
+        percent_dense: float,
+        prune_opacity_threshold: float,
+    ):
+        """Clone/split under- or over-reconstructed Gaussians and prune low opacity (3DGS-style)."""
+        if self.optimizer is None or iteration >= densify_until_iter:
+            return
+        with torch.no_grad():
+            n = self.get_xyz().shape[0]
+            if n == 0:
+                return
+
+            # 1. Prune low opacity
+            prune_mask = (self.get_opacity() < prune_opacity_threshold).squeeze()
+            if prune_mask.any():
+                valid = ~prune_mask
+                if valid.sum() > 0:
+                    self.prune_points(prune_mask)
+                    n = self.get_xyz().shape[0]
+                    if n == 0:
+                        return
+            # 插入: 打印要删除多少高斯
+            if prune_mask.any():
+                print(f"[densify_and_prune] Pruning {prune_mask.sum().item()} Gaussians due to low opacity.")
+            # 2. Gradient and scale stats
+            grad_avg = self.xyz_gradient_accum / self.denom.clamp(min=1)
+            grad_avg = grad_avg.squeeze(-1)  # (N,)
+            scales = self.get_scaling()  # (N, 2) or (N, 3)
+            scale_max = scales.max(dim=1).values  # (N,)
+
+            # Scene extent for percent_dense threshold
+            xyz = self._xyz
+            extent = (xyz.max(dim=0).values - xyz.min(dim=0).values).clamp(min=1e-6)
+            thresh = extent.max().item() * percent_dense
+
+            # 3. Clone: high gradient, small scale
+            clone_mask = (grad_avg >= densify_grad_threshold) & (scale_max < thresh)
+            # 4. Split: large scale
+            split_mask = scale_max >= thresh
+
+            scale_cols = self._scaling.shape[1]  # 2 or 3
+            to_add_xyz, to_add_rgb = [], []
+            to_add_f_dc, to_add_f_rest = [], []
+            to_add_opacity, to_add_scaling, to_add_rotation = [], [], []
+
+            if clone_mask.any():
+                idx = torch.where(clone_mask)[0]
+                # Slightly smaller scale and lower opacity for clones
+                clone_scale = self._scaling.detach()[idx] + np.log(0.8)  # log space
+                opa_linear = self.opacity_activation(self._opacity.detach()[idx])
+                clone_opacity = self.inverse_opacity_activation(opa_linear * 0.5)
+                to_add_xyz.append(self._xyz.detach()[idx])
+                to_add_rgb.append(self._rgb.detach()[idx])
+                to_add_f_dc.append(self._features_dc.detach()[idx])
+                to_add_f_rest.append(self._features_rest.detach()[idx])
+                to_add_opacity.append(clone_opacity)
+                to_add_scaling.append(clone_scale)
+                to_add_rotation.append(self._rotation.detach()[idx])
+
+            if split_mask.any():
+                idx = torch.where(split_mask)[0]
+                scales_act = self.get_scaling()[idx]  # (K, 2) or (K, 3)
+                if scale_cols == 2:
+                    scale_3d = torch.cat(
+                        [scales_act, scales_act[:, 1:2]], dim=1
+                    )  # (K, 3) e.g. (s0,s1,s1)
+                else:
+                    scale_3d = scales_act
+                rots = self.get_rotation()[idx]
+                L = build_scaling_rotation(scale_3d, rots)  # (K, 3, 3)
+                cov = L @ L.transpose(1, 2)
+                # Principal direction: eigenvector for largest eigenvalue
+                evals, evecs = torch.linalg.eigh(cov)  # evals (K,3), evecs (K,3,3)
+                principal = evecs[:, :, -1]  # (K, 3) largest eval last
+                scale_max_idx = scale_max[idx]  # (K,)
+                offset = scale_max_idx.unsqueeze(1) * 0.2 * principal  # (K, 3)
+                xyz_idx = self._xyz.detach()[idx]
+                half_scale_log = self._scaling.detach()[idx] - np.log(2.0)
+                opa_linear = self.opacity_activation(self._opacity.detach()[idx])
+                split_opacity = self.inverse_opacity_activation(opa_linear * 0.5)
+
+                # Two new points per split
+                xyz_1 = xyz_idx + offset
+                xyz_2 = xyz_idx - offset
+                to_add_xyz.extend([xyz_1, xyz_2])
+                to_add_rgb.extend(
+                    [self._rgb.detach()[idx], self._rgb.detach()[idx]]
+                )
+                to_add_f_dc.extend(
+                    [self._features_dc.detach()[idx], self._features_dc.detach()[idx]]
+                )
+                to_add_f_rest.extend(
+                    [
+                        self._features_rest.detach()[idx],
+                        self._features_rest.detach()[idx],
+                    ]
+                )
+                to_add_opacity.extend([split_opacity, split_opacity])
+                to_add_scaling.extend([half_scale_log, half_scale_log])
+                to_add_rotation.extend(
+                    [self._rotation.detach()[idx], self._rotation.detach()[idx]]
+                )
+
+            if not to_add_xyz:
+                return
+
+            new_xyz = torch.cat(to_add_xyz, dim=0)
+            new_rgb = torch.cat(to_add_rgb, dim=0)
+            new_f_dc = torch.cat(to_add_f_dc, dim=0)
+            new_f_rest = torch.cat(to_add_f_rest, dim=0)
+            new_opacity = torch.cat(to_add_opacity, dim=0)
+            new_scaling = torch.cat(to_add_scaling, dim=0)
+            new_rotation = torch.cat(to_add_rotation, dim=0)
+
+            self.densification_postfix(
+                new_xyz, new_rgb, new_f_dc, new_f_rest,
+                new_opacity, new_scaling, new_rotation,
+            )
+
+    def reset_opacity_for_densification(self, decay: float = 0.8):
+        """Reset opacity (global gentle shrink) so optimization can prune; sync optimizer."""
+        if self.optimizer is None:
+            return
+        with torch.no_grad():
+            opa = self.opacity_activation(self._opacity)
+            opa_new = (opa * decay).clamp(1e-6, 1.0 - 1e-6)
+            new_opacity_tensor = self.inverse_opacity_activation(opa_new)
+            self.replace_tensor_to_optimizer(new_opacity_tensor, "opacity")
+            for group in self.optimizer.param_groups:
+                if group["name"] == "opacity":
+                    self._opacity = group["params"][0]
+                    break
 
     def oneupSHdegree(self):
         if self.active_sh_degree < self.max_sh_degree:

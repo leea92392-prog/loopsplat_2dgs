@@ -525,8 +525,6 @@ class Mapper(object):
         #     self.logger.log_mapping_iteration(frame_id, new_pts_num, gaussian_model.get_size(),
         #                                       optimization_time/max_iterations, opt_dict)
         #     return opt_dict
-
-
     def map(self, frame_id: int, estimate_c2w: np.ndarray, gaussian_model: GaussianModel, is_new_submap: bool, exposure_ab=None) -> dict:
         """ Calls out the mapping process described in paragraph 3.2
         The process goes as follows: seed new gaussians -> add to the submap -> optimize the submap

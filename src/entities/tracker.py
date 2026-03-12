@@ -319,5 +319,6 @@ class Tracker(object):
 
         final_c2w = cur_c2w
         final_c2w[-1, :] = torch.tensor([0., 0., 0., 1.], dtype=final_c2w.dtype, device=final_c2w.device)
-        self.pose_utils_adapter.update_keyframes(final_c2w)
+        if self.use_pose_utils and len(self.pose_utils_adapter.keyframes) > 0:
+            self.pose_utils_adapter.update_keyframes(final_c2w)
         return torch2np(final_c2w), exposure_ab

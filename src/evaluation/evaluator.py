@@ -21,7 +21,7 @@ from tqdm import tqdm
 from src.entities.arguments import OptimizationParams
 from src.entities.datasets import get_dataset
 from src.entities.gaussian_model import GaussianModel
-from src.evaluation.evaluate_merged_map import (RenderFrames, merge_submaps,
+from src.evaluation.evaluate_merged_map import (RenderFrames, merge_submaps,merge_submaps_inherit_from_splats,
                                                 refine_global_map,
                                                 render_frames_collate_fn)
 from src.evaluation.evaluate_reconstruction import evaluate_reconstruction, clean_mesh
@@ -405,7 +405,7 @@ class Evaluator(object):
         # 可视化点云
         o3d.visualization.draw_geometries([o3d_pcd])
 
-    def run_global_map_eval(self, init_from='mesh'):
+    def run_global_map_eval(self, init_from='splats'):
         """ Merges the map, evaluates it over training and novel views 
         
         Args:
@@ -417,7 +417,7 @@ class Evaluator(object):
             self.dataset, self.estimated_c2w, self.height, self.width, self.fx, self.fy, self.exposures_ab, config=self.config)
         refine_cfg = self.config.get("refine_global_map", {})
         refine_mode = refine_cfg.get("refine_mode", "shuffle")
-
+        print ("refine_mode: ", refine_mode)
         if refine_mode == "sequential_per_frame":
             # Mapper-style: keyframes in order; per_frame_iters per keyframe; prune+add every prune_add_interval
             training_frames = render_frames_dataset
@@ -426,10 +426,42 @@ class Evaluator(object):
             training_frames = DataLoader(
                 render_frames_dataset, batch_size=1, shuffle=True, collate_fn=render_frames_collate_fn)
             len_frames = len(training_frames)
-            training_frames = cycle(training_frames)
+            # Do not wrap in cycle() so refine_global_map can iterate without materializing all frames (avoids OOM)
 
         merge_radius = self.config.get("lc", {}).get("merge_radius", 0.01)
-        merged_cloud = merge_submaps(self.submaps_paths, radius=merge_radius) if init_from == 'splats' else None
+        # merged_cloud = merge_submaps(self.submaps_paths, radius=merge_radius) if init_from == 'splats' else None
+        isotropic = self.config.get("renderer", "2dgs") != "3dgs"
+        gaussian_model = GaussianModel(sh_degree=3, isotropic=isotropic)
+        gaussian_model.active_sh_degree = 0
+        opt_params = OptimizationParams(ArgumentParser(description="Training script parameters"))
+        if init_from == 'splats':
+            xyz, rgb, fdc, frest, opacity, scaling, rotation = merge_submaps(
+                self.submaps_paths, radius=merge_radius, return_gaussian_params=True
+            )
+            gaussian_model.densification_postfix(xyz, rgb, fdc, frest, opacity, scaling, rotation)
+        ply_path = self.checkpoint_path / \
+            f"{self.config['data']['scene_name']}_splats_before_global_refine.ply"
+        gaussian_model.save_ply(ply_path)
+        print(f"Splats before global refine saved to {ply_path}")
+        # #region agent log
+        try:
+            import json as _json
+            import time as _time
+            with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-9c0668.log", "a") as _f:
+                _f.write(_json.dumps({"sessionId": "9c0668", "hypothesisId": "H1", "location": "evaluator.py:before_training_setup", "message": "before training_setup", "data": {"n_points": gaussian_model.get_size()}, "timestamp": _time.time()}) + "\n")
+        except Exception:
+            pass
+        # #endregion
+        gaussian_model.training_setup(opt_params)
+        # #region agent log
+        try:
+            import json as _json2
+            import time as _time2
+            with open("/home/wujie/ws_0122/loopsplat_2dgs/.cursor/debug-9c0668.log", "a") as _f:
+                _f.write(_json2.dumps({"sessionId": "9c0668", "hypothesisId": "H1", "location": "evaluator.py:after_training_setup", "message": "after training_setup", "data": {}, "timestamp": _time2.time()}) + "\n")
+        except Exception:
+            pass
+        # #endregion
 
         intrinsic = o3d.camera.PinholeCameraIntrinsic(
             self.width, self.height, self.fx, self.fy, self.cx, self.cy)
@@ -438,12 +470,12 @@ class Evaluator(object):
         prune_add_interval = int(refine_cfg.get("prune_add_interval", 20))
 
         refined_merged_gaussian_model = refine_global_map(
-            merged_cloud, training_frames, max_iterations=20000, export_refine_mesh=False,
+            gaussian_model, opt_params, training_frames, max_iterations=8000, export_refine_mesh=False,
             output_dir=self.checkpoint_path, len_frames=len_frames,
             o3d_intrinsic=intrinsic,
             add_gaussians_every=add_gaussians_every,
             height=self.height, width=self.width, fx=self.fx, fy=self.fy, cx=self.cx, cy=self.cy,
-            add_gaussians_max_points=int(refine_cfg.get("add_gaussians_max_points", 5000)),
+            add_gaussians_max_points=int(refine_cfg.get("add_gaussians_max_points", 9000)),
             depth_error_median_k=float(refine_cfg.get("depth_error_median_k", 10.0)),
             prune_opacity_threshold=float(refine_cfg.get("prune_opacity_threshold", 0.1)),
             max_scale_ratio_to_mode=float(refine_cfg.get("max_scale_ratio_to_mode", 5.0)),
@@ -460,6 +492,12 @@ class Evaluator(object):
             refine_vis_interval=int(refine_cfg.get("refine_vis_interval", 0)),
             refine_vis_save=bool(refine_cfg.get("refine_vis_save", True)),
             refine_vis_interactive=bool(refine_cfg.get("refine_vis_interactive", False)),
+            densification_interval=int(refine_cfg.get("densification_interval", 100)),
+            opacity_reset_interval=int(refine_cfg.get("opacity_reset_interval", 3000)),
+            densify_from_iter=int(refine_cfg.get("densify_from_iter", 500)),
+            densify_until_iter=int(refine_cfg.get("densify_until_iter", 15000)),
+            densify_grad_threshold=float(refine_cfg.get("densify_grad_threshold", 0.0002)),
+            percent_dense=float(refine_cfg.get("percent_dense", 0.01)),
         )
         ply_path = self.checkpoint_path / \
             f"{self.config['data']['scene_name']}_global_splats.ply"
@@ -573,23 +611,23 @@ class Evaluator(object):
 
         print("Starting evaluation...🍺")
 
-        try:
-            self.run_trajectory_eval()
-        except Exception:
-            print("Could not run trajectory eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_trajectory_eval()
+        # except Exception:
+        #     print("Could not run trajectory eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_rendering_eval()
-        except Exception:
-            print("Could not run rendering eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_rendering_eval()
+        # except Exception:
+        #     print("Could not run rendering eval")
+        #     traceback.print_exc()
 
-        try:
-            self.run_reconstruction_eval()
-        except Exception:
-            print("Could not run reconstruction eval")
-            traceback.print_exc()
+        # try:
+        #     self.run_reconstruction_eval()
+        # except Exception:
+        #     print("Could not run reconstruction eval")
+        #     traceback.print_exc()
 
         try:
             self.run_global_map_eval()

@@ -248,6 +248,8 @@ class LoopSplatSceneModel:
 
         scene_name = config.get("data", {}).get("scene_name", "scene")
         ply_path = output_path / f"{scene_name}_global_splats.ply"
+        #ply_path = output_path / f"{scene_name}_splats_before_global_refine.ply"
+
         if not ply_path.exists():
             found = list(output_path.glob("*_global_splats.ply"))
             ply_path = found[0] if found else None

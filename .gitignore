@@ -27,6 +27,7 @@ share/python-wheels/
 MANIFEST
 output/
 output_miniba/
+output_3dgs/    
 draw_picture/
 models/
 data/
